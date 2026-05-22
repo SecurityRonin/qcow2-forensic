@@ -44,6 +44,11 @@ impl Qcow2Header {
         }
 
         let cluster_bits = u32::from_be_bytes(data[20..24].try_into().unwrap());
+        // QCOW2 spec §3: cluster_bits must be in [9, 20]. Values outside this range
+        // cause shift overflow or u32 underflow in downstream arithmetic.
+        if !(9..=20).contains(&cluster_bits) {
+            return Err(Qcow2Error::ClusterBitsOutOfRange(cluster_bits));
+        }
         let disk_size = u64::from_be_bytes(data[24..32].try_into().unwrap());
 
         let encryption_method = u32::from_be_bytes(data[32..36].try_into().unwrap());

@@ -20,4 +20,6 @@ pub enum Qcow2Error {
     UnsupportedIncompatibleFeatures(u64),
     #[error("QCOW2 file too small")]
     FileTooSmall,
+    #[error("cluster_bits {0} out of valid range [9, 20]")]
+    ClusterBitsOutOfRange(u32),
 }
