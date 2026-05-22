@@ -30,24 +30,121 @@ pub struct Qcow2Reader {
 impl Qcow2Reader {
     /// Open a QCOW2 disk image (v2 or v3, uncompressed, no backing file).
     pub fn open(path: &Path) -> Result<Self, Qcow2Error> {
-        todo!("implement Qcow2Reader::open")
+        let mut file = File::open(path)?;
+
+        // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes) headers.
+        let mut hdr_buf = [0u8; 104];
+        let hdr_read = file.read(&mut hdr_buf)?;
+        let hdr = Qcow2Header::parse(&hdr_buf[..hdr_read])?;
+
+        let cluster_size = 1u64 << hdr.cluster_bits;
+        // Each L2 table occupies one cluster; each entry is 8 bytes.
+        let l2_entries = cluster_size / 8;
+        let l2_bits = hdr.cluster_bits - 3; // log2(l2_entries)
+        let l2_mask = l2_entries - 1;
+
+        // Load L1 table into memory.
+        file.seek(SeekFrom::Start(hdr.l1_table_offset))?;
+        let l1_bytes = u64::from(hdr.l1_size) * 8;
+        let mut l1_buf = vec![0u8; l1_bytes as usize];
+        file.read_exact(&mut l1_buf)?;
+        let l1_table: Vec<u64> = l1_buf
+            .chunks_exact(8)
+            .map(|c| u64::from_be_bytes(c.try_into().unwrap()))
+            .collect();
+
+        Ok(Qcow2Reader {
+            file,
+            virtual_disk_size: hdr.disk_size,
+            cluster_size,
+            l1_table,
+            l2_bits,
+            l2_mask,
+            pos: 0,
+        })
     }
 
     /// Virtual disk size in bytes as recorded in the QCOW2 header.
     pub fn virtual_disk_size(&self) -> u64 {
         self.virtual_disk_size
     }
+
+    /// Resolve `virtual_offset` → file byte offset, or `None` for a sparse cluster.
+    fn file_offset_for(&mut self, virtual_offset: u64) -> io::Result<Option<u64>> {
+        let cluster_idx = virtual_offset >> self.cluster_size.trailing_zeros();
+        let offset_in_cluster = virtual_offset & (self.cluster_size - 1);
+
+        let l1_idx = (cluster_idx >> self.l2_bits) as usize;
+        let l2_idx = cluster_idx & self.l2_mask;
+
+        let l1_entry = self.l1_table.get(l1_idx).copied().unwrap_or(0);
+        let l2_table_offset = l1_entry & 0x7FFF_FFFF_FFFF_FFFF; // mask COPIED bit
+        if l2_table_offset == 0 {
+            return Ok(None);
+        }
+
+        let l2_entry_pos = l2_table_offset + l2_idx * 8;
+        self.file.seek(SeekFrom::Start(l2_entry_pos))?;
+        let mut l2_bytes = [0u8; 8];
+        self.file.read_exact(&mut l2_bytes)?;
+        let l2_entry = u64::from_be_bytes(l2_bytes);
+
+        if l2_entry & (1 << 62) != 0 {
+            // Compressed cluster — not supported for reads.
+            return Err(io::Error::other("compressed qcow2 cluster not supported"));
+        }
+
+        let cluster_offset = l2_entry & 0x3FFF_FFFF_FFFF_FFFF; // mask COPIED + COMPRESSED
+        if cluster_offset == 0 {
+            return Ok(None); // unallocated
+        }
+
+        Ok(Some(cluster_offset + offset_in_cluster))
+    }
 }
 
 impl Read for Qcow2Reader {
-    fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-        todo!("implement Qcow2Reader::read")
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.pos >= self.virtual_disk_size || buf.is_empty() {
+            return Ok(0);
+        }
+
+        let remaining_virtual = (self.virtual_disk_size - self.pos) as usize;
+        let remaining_in_cluster =
+            (self.cluster_size - (self.pos & (self.cluster_size - 1))) as usize;
+        let to_read = buf.len().min(remaining_virtual).min(remaining_in_cluster);
+
+        let n = match self.file_offset_for(self.pos)? {
+            Some(file_off) => {
+                self.file.seek(SeekFrom::Start(file_off))?;
+                self.file.read(&mut buf[..to_read])?
+            }
+            None => {
+                buf[..to_read].fill(0);
+                to_read
+            }
+        };
+
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 
 impl Seek for Qcow2Reader {
-    fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
-        todo!("implement Qcow2Reader::seek")
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(n) => n as i64,
+            SeekFrom::Current(n) => self.pos as i64 + n,
+            SeekFrom::End(n) => self.virtual_disk_size as i64 + n,
+        };
+        if new_pos < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
+        }
+        self.pos = new_pos as u64;
+        Ok(self.pos)
     }
 }
 
