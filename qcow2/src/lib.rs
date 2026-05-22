@@ -169,6 +169,49 @@ mod tests {
         f
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Build a minimal valid QCOW2 v2 header (72 bytes) with arbitrary cluster_bits.
+    fn qcow2_header_bytes(cluster_bits: u32) -> Vec<u8> {
+        let mut h = vec![0u8; 72];
+        h[0..4].copy_from_slice(&0x5146_49fb_u32.to_be_bytes()); // magic
+        h[4..8].copy_from_slice(&2u32.to_be_bytes());             // version 2
+        // bytes 8..16: backing_file_offset = 0
+        // bytes 16..20: backing_file_size = 0
+        h[20..24].copy_from_slice(&cluster_bits.to_be_bytes());   // cluster_bits
+        h[24..32].copy_from_slice(&512u64.to_be_bytes());         // disk_size
+        // bytes 32..36: encryption = 0
+        h[36..40].copy_from_slice(&0u32.to_be_bytes());           // l1_size = 0
+        h[40..48].copy_from_slice(&0u64.to_be_bytes());           // l1_table_offset
+        h
+    }
+
+    // ── Panic regression tests (RED until header.rs validates cluster_bits) ───
+
+    #[test]
+    fn cluster_bits_too_large_rejected() {
+        // cluster_bits=200 triggers "attempt to shift left with overflow" on
+        // `1u64 << hdr.cluster_bits` (lib.rs line 40) in debug builds.
+        let f = write_tmp(&qcow2_header_bytes(200));
+        assert!(Qcow2Reader::open(f.path()).is_err());
+    }
+
+    #[test]
+    fn cluster_bits_zero_rejected() {
+        // cluster_bits=0 triggers u32 underflow on `cluster_bits - 3` (lib.rs line 43).
+        let f = write_tmp(&qcow2_header_bytes(0));
+        assert!(Qcow2Reader::open(f.path()).is_err());
+    }
+
+    #[test]
+    fn cluster_bits_below_minimum_rejected() {
+        // cluster_bits=2 also triggers the same underflow (2 - 3 wraps for u32).
+        let f = write_tmp(&qcow2_header_bytes(2));
+        assert!(Qcow2Reader::open(f.path()).is_err());
+    }
+
+    // ── Existing tests ────────────────────────────────────────────────────────
+
     #[test]
     fn open_nonexistent_returns_err() {
         assert!(Qcow2Reader::open(Path::new("/tmp/no_such.qcow2")).is_err());
