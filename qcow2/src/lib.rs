@@ -270,4 +270,30 @@ mod tests {
         fn assert_send<T: Send>() {}
         assert_send::<Qcow2Reader>();
     }
+
+    // ── Property tests: open() never panics on arbitrary input ────────────────
+
+    proptest::proptest! {
+        #[test]
+        fn open_never_panics_on_arbitrary_bytes(
+            bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8192)
+        ) {
+            let f = write_tmp(&bytes);
+            let _ = Qcow2Reader::open(f.path());
+        }
+
+        #[test]
+        fn open_never_panics_on_valid_magic_plus_garbage(
+            suffix in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8192)
+        ) {
+            // Correct magic + version 2 prefix ensures the parser gets past early
+            // rejection and exercises field parsing with random data.
+            let mut bytes = vec![0u8; 8];
+            bytes[0..4].copy_from_slice(&0x5146_49fb_u32.to_be_bytes());
+            bytes[4..8].copy_from_slice(&2u32.to_be_bytes());
+            bytes.extend_from_slice(&suffix);
+            let f = write_tmp(&bytes);
+            let _ = Qcow2Reader::open(f.path());
+        }
+    }
 }
