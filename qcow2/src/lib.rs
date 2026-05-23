@@ -340,4 +340,57 @@ mod tests {
             );
         }
     }
+
+    // ── Corpus differential test: real CirrOS image vs qemu-img convert ───────
+
+    #[test]
+    fn corpus_cirros_reads_match_qemu_raw_convert() {
+        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
+        if !Path::new(QEMU_IMG).exists() {
+            return;
+        }
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/cirros-0.6.3-x86_64-disk.img");
+        if !corpus.exists() {
+            return; // skip if corpus not present
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let raw_path = tmp.path().join("cirros.raw");
+        let ok = std::process::Command::new(QEMU_IMG)
+            .args(["convert", "-O", "raw",
+                   corpus.to_str().unwrap(),
+                   raw_path.to_str().unwrap()])
+            .status().expect("spawn qemu-img").success();
+        assert!(ok, "qemu-img convert failed");
+        let ref_data = std::fs::read(&raw_path).expect("read raw");
+
+        let mut reader = Qcow2Reader::open(&corpus).expect("open corpus");
+        assert_eq!(reader.virtual_disk_size(), ref_data.len() as u64,
+            "virtual_disk_size must match reference raw length");
+
+        // CirrOS is 112 MiB virtual. Sample across the full range:
+        // MBR, partition table, multiple cluster boundaries, mid-image, near-end.
+        let vsize = ref_data.len();
+        let cluster = 65536usize;
+        let samples = [
+            0usize,               // MBR / boot sector
+            446,                  // partition table entries
+            510,                  // MBR boot signature (0x55 0xAA)
+            cluster,              // second cluster
+            cluster * 10,         // tenth cluster
+            vsize / 2,            // mid-image
+            vsize / 2 + cluster,  // mid-image + one cluster
+            vsize - 512,          // last sector
+        ];
+        for &offset in &samples {
+            let len = 512.min(vsize - offset);
+            let mut buf = vec![0u8; len];
+            reader.seek(SeekFrom::Start(offset as u64)).expect("seek");
+            reader.read_exact(&mut buf).expect("read");
+            assert_eq!(
+                buf, ref_data[offset..offset + len],
+                "byte mismatch at offset {offset:#x}",
+            );
+        }
+    }
 }
