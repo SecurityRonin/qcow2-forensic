@@ -296,4 +296,48 @@ mod tests {
             let _ = Qcow2Reader::open(f.path());
         }
     }
+
+    // ── Differential test: bytes must match qemu-img convert -O raw output ────
+
+    #[test]
+    fn reads_match_qemu_raw_convert() {
+        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
+        if !Path::new(QEMU_IMG).exists() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // 1 MiB source with a deterministic non-trivial pattern covering
+        // sector boundaries and cluster boundaries (default cluster = 65536 B).
+        let size: usize = 1 << 20;
+        let raw_data: Vec<u8> = (0..size).map(|i| (i ^ (i >> 8)) as u8).collect();
+        let raw_path = tmp.path().join("source.raw");
+        std::fs::write(&raw_path, &raw_data).expect("write raw");
+
+        let qcow2_path = tmp.path().join("test.qcow2");
+        let status = std::process::Command::new(QEMU_IMG)
+            .args(["convert", "-O", "qcow2",
+                   raw_path.to_str().unwrap(),
+                   qcow2_path.to_str().unwrap()])
+            .status()
+            .expect("spawn qemu-img");
+        assert!(status.success(), "qemu-img convert failed");
+
+        let mut reader = Qcow2Reader::open(&qcow2_path).expect("open");
+        assert_eq!(reader.virtual_disk_size(), size as u64);
+
+        // Sample: start, mid-sector, cluster boundary, cluster+sector, near-end.
+        let cluster = 65536usize;
+        for &offset in &[0usize, 511, cluster, cluster + 512, size - 512] {
+            let len = 512.min(size - offset);
+            let mut buf = vec![0u8; len];
+            reader.seek(SeekFrom::Start(offset as u64)).expect("seek");
+            reader.read_exact(&mut buf).expect("read");
+            assert_eq!(
+                buf,
+                raw_data[offset..offset + len],
+                "byte mismatch at offset {offset:#x}",
+            );
+        }
+    }
 }
