@@ -69,10 +69,9 @@ impl Qcow2Reader {
         self.virtual_disk_size
     }
 
-    /// Resolve `virtual_offset` → file byte offset, or `None` for a sparse cluster.
-    fn file_offset_for(&mut self, virtual_offset: u64) -> io::Result<Option<u64>> {
+    /// Resolve `virtual_offset` to a cluster reference.
+    fn cluster_ref_for(&mut self, virtual_offset: u64) -> io::Result<ClusterRef> {
         let cluster_idx = virtual_offset >> self.cluster_size.trailing_zeros();
-        let offset_in_cluster = virtual_offset & (self.cluster_size - 1);
 
         let l1_idx = (cluster_idx >> self.l2_bits) as usize;
         let l2_idx = cluster_idx & self.l2_mask;
@@ -80,7 +79,7 @@ impl Qcow2Reader {
         let l1_entry = self.l1_table.get(l1_idx).copied().unwrap_or(0);
         let l2_table_offset = l1_entry & 0x7FFF_FFFF_FFFF_FFFF; // mask COPIED bit
         if l2_table_offset == 0 {
-            return Ok(None);
+            return Ok(ClusterRef::Unallocated);
         }
 
         let l2_entry_pos = l2_table_offset + l2_idx * 8;
@@ -90,17 +89,65 @@ impl Qcow2Reader {
         let l2_entry = u64::from_be_bytes(l2_bytes);
 
         if l2_entry & (1 << 62) != 0 {
-            // Compressed cluster — not supported for reads.
-            return Err(io::Error::other("compressed qcow2 cluster not supported"));
+            // Compressed cluster. QCOW2 spec (QEMU implementation):
+            //   csize_shift = 40 - cluster_bits
+            //   lower csize_shift bits = file BYTE offset (already bytes, no ×512)
+            //   next (cluster_bits - 8) bits = compressed_sectors - 1
+            // QCOW2 spec: lower (63 - cluster_bits) bits = file byte offset;
+            // next (cluster_bits - 1) bits = compressed_sectors - 1.
+            // The offset is already in bytes — no sector-to-byte conversion.
+            let cluster_bits = self.cluster_size.trailing_zeros(); // u32, in [9, 20]
+            let split = 63u32 - cluster_bits; // bits in offset field
+            let count_mask = (1u64 << (cluster_bits - 1)) - 1; // cluster_bits-1 count bits
+            let file_offset = l2_entry & ((1u64 << split) - 1);
+            let nb_sectors = ((l2_entry >> split) & count_mask) + 1;
+            let compressed_bytes = (nb_sectors * 512) as usize;
+            return Ok(ClusterRef::Compressed { file_offset, compressed_bytes });
         }
 
-        let cluster_offset = l2_entry & 0x3FFF_FFFF_FFFF_FFFF; // mask COPIED + COMPRESSED
+        let cluster_offset = l2_entry & 0x3FFF_FFFF_FFFF_FFFF;
         if cluster_offset == 0 {
-            return Ok(None); // unallocated
+            return Ok(ClusterRef::Unallocated);
+        }
+        Ok(ClusterRef::Normal(cluster_offset))
+    }
+
+    /// Read and raw-deflate-decompress a compressed cluster; return the
+    /// full `cluster_size` bytes of decompressed data.
+    ///
+    /// `compressed_bytes` is an upper bound (nb_sectors × 512); the actual
+    /// compressed stream may be shorter, and near the end of the file the read
+    /// may hit EOF before reaching `compressed_bytes`. Both are normal.
+    fn decompress_cluster(&mut self, file_offset: u64, compressed_bytes: usize) -> io::Result<Vec<u8>> {
+        use flate2::read::DeflateDecoder;
+
+        self.file.seek(SeekFrom::Start(file_offset))?;
+        let mut raw = vec![0u8; compressed_bytes];
+        let mut filled = 0;
+        while filled < compressed_bytes {
+            match self.file.read(&mut raw[filled..])? {
+                0 => break, // EOF — normal for the last compressed cluster
+                n => filled += n,
+            }
         }
 
-        Ok(Some(cluster_offset + offset_in_cluster))
+        let mut decoder = DeflateDecoder::new(&raw[..filled]);
+        let mut out = Vec::with_capacity(self.cluster_size as usize);
+        decoder.read_to_end(&mut out).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("qcow2 deflate: {e}"))
+        })?;
+        if out.len() < self.cluster_size as usize {
+            out.resize(self.cluster_size as usize, 0);
+        }
+        Ok(out)
     }
+}
+
+/// Cluster location resolved from an L2 entry.
+enum ClusterRef {
+    Unallocated,
+    Normal(u64),
+    Compressed { file_offset: u64, compressed_bytes: usize },
 }
 
 impl Read for Qcow2Reader {
@@ -110,16 +157,23 @@ impl Read for Qcow2Reader {
         }
 
         let remaining_virtual = (self.virtual_disk_size - self.pos) as usize;
-        let remaining_in_cluster =
-            (self.cluster_size - (self.pos & (self.cluster_size - 1))) as usize;
+        let offset_in_cluster = (self.pos & (self.cluster_size - 1)) as usize;
+        let remaining_in_cluster = self.cluster_size as usize - offset_in_cluster;
         let to_read = buf.len().min(remaining_virtual).min(remaining_in_cluster);
 
-        let n = match self.file_offset_for(self.pos)? {
-            Some(file_off) => {
+        let n = match self.cluster_ref_for(self.pos)? {
+            ClusterRef::Normal(cluster_offset) => {
+                let file_off = cluster_offset + offset_in_cluster as u64;
                 self.file.seek(SeekFrom::Start(file_off))?;
                 self.file.read(&mut buf[..to_read])?
             }
-            None => {
+            ClusterRef::Compressed { file_offset, compressed_bytes } => {
+                let decompressed = self.decompress_cluster(file_offset, compressed_bytes)?;
+                let src = &decompressed[offset_in_cluster..offset_in_cluster + to_read];
+                buf[..to_read].copy_from_slice(src);
+                to_read
+            }
+            ClusterRef::Unallocated => {
                 buf[..to_read].fill(0);
                 to_read
             }
