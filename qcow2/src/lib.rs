@@ -105,6 +105,13 @@ impl Qcow2Reader {
             return Ok(ClusterRef::Compressed { file_offset, compressed_bytes });
         }
 
+        // QCOW_OFLAG_ZERO (bit 0): guest must see zeros regardless of cluster offset.
+        // Covers ZERO_PLAIN (l2_entry=1, no backing cluster) and ZERO_ALLOC (cluster
+        // allocated but zeroed out), both mandated by the QCOW2 spec.
+        if l2_entry & 1 != 0 {
+            return Ok(ClusterRef::ZeroCluster);
+        }
+
         let cluster_offset = l2_entry & 0x3FFF_FFFF_FFFF_FFFF;
         if cluster_offset == 0 {
             return Ok(ClusterRef::Unallocated);
@@ -146,6 +153,7 @@ impl Qcow2Reader {
 /// Cluster location resolved from an L2 entry.
 enum ClusterRef {
     Unallocated,
+    ZeroCluster,
     Normal(u64),
     Compressed { file_offset: u64, compressed_bytes: usize },
 }
@@ -173,7 +181,7 @@ impl Read for Qcow2Reader {
                 buf[..to_read].copy_from_slice(src);
                 to_read
             }
-            ClusterRef::Unallocated => {
+            ClusterRef::ZeroCluster | ClusterRef::Unallocated => {
                 buf[..to_read].fill(0);
                 to_read
             }
