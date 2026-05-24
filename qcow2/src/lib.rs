@@ -351,6 +351,36 @@ mod tests {
         }
     }
 
+    // ── QCOW_OFLAG_ZERO (bit 0): ZERO_PLAIN clusters must read as zeros ─────────
+    // L2 entry = 1 (ZERO_PLAIN): bit 62=0 (not compressed), bit 0=1 (zero flag),
+    // offset field = 0. Correct behaviour: reads return cluster_size zeros.
+    // Bug path: our code masks with 0x3FFF.., gets cluster_offset=1, then seeks to
+    // file byte 1 and reads header bytes instead of returning zeros.
+    #[test]
+    fn zero_plain_cluster_reads_as_zeros() {
+        use testutil::{CLUSTER_BITS, CLUSTER_SIZE};
+        use std::io::Write;
+
+        // Build test_qcow2 but with L2[0] = 1 (ZERO_PLAIN) instead of DATA_OFFSET.
+        let img = test_qcow2(&[0xABu8; 512]); // produces a valid image
+        // Patch L2[0] = 1 at offset 1536 (L2_OFFSET from testutil).
+        let mut patched = img.clone();
+        let l2_offset = 1536usize;
+        patched[l2_offset..l2_offset + 8].copy_from_slice(&1u64.to_be_bytes());
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&patched).unwrap();
+        let mut reader = Qcow2Reader::open(f.path()).expect("open");
+        let mut buf = [0xFFu8; 512];
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        reader.read_exact(&mut buf).expect("read");
+        assert_eq!(
+            buf,
+            [0u8; 512],
+            "ZERO_PLAIN cluster (L2 entry=1) must read as all zeros"
+        );
+    }
+
     // ── Differential test: bytes must match qemu-img convert -O raw output ────
 
     #[test]
