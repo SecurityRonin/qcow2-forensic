@@ -46,6 +46,15 @@ near-end 512-byte read, compared against `qemu-img convert -O raw`.
 Exercises: zlib-compressed cluster decoding, L1→L2 indirection,
 unallocated (zero) cluster regions.
 
+### `zero_plain_cluster_reads_as_zeros` (unit — bug regression)
+
+Patches `L2[0] = 1` (QCOW_OFLAG_ZERO, ZERO_PLAIN) in a synthetic image
+and asserts `Qcow2Reader::read` returns 512 zero bytes. **PASS**.
+
+Prior to fix: code masked bit 0 via `& 0x3FFF_FFFF_FFFF_FFFF`, yielding
+`cluster_offset = 1`, then seeked to file byte 1 and returned header data.
+Fixed by checking `l2_entry & 1 != 0` and returning `ClusterRef::ZeroCluster`.
+
 ## Validation Coverage
 
 | Feature | Covered | Notes |
@@ -53,6 +62,8 @@ unallocated (zero) cluster regions.
 | Uncompressed clusters | Yes | synthetic test |
 | Compressed clusters (zlib) | Yes | CirrOS image |
 | Unallocated (zero) clusters | Yes | CirrOS has sparse regions |
+| QCOW_OFLAG_ZERO / ZERO_PLAIN | Yes | `zero_plain_cluster_reads_as_zeros` unit test |
+| QCOW_OFLAG_ZERO / ZERO_ALLOC | Implicit | same code path as ZERO_PLAIN |
 | Backing files | No | Not in current corpus |
 | QCOW2 v2 | No | CirrOS is v3 only |
 | Encryption | No | Not in scope |
