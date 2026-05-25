@@ -22,4 +22,6 @@ pub enum Qcow2Error {
     FileTooSmall,
     #[error("cluster_bits {0} out of valid range [9, 20]")]
     ClusterBitsOutOfRange(u32),
+    #[error("L1 table has {0} entries, exceeding the 1 048 576 entry safety limit")]
+    L1TableTooLarge(u32),
 }

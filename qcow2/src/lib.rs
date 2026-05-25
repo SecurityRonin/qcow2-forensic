@@ -44,6 +44,10 @@ impl Qcow2Reader {
         let l2_mask = l2_entries - 1;
 
         // Load L1 table into memory.
+        const MAX_L1_ENTRIES: u32 = 1 << 20; // 8 MiB max — prevents OOM on crafted images
+        if hdr.l1_size > MAX_L1_ENTRIES {
+            return Err(Qcow2Error::L1TableTooLarge(hdr.l1_size));
+        }
         file.seek(SeekFrom::Start(hdr.l1_table_offset))?;
         let l1_bytes = u64::from(hdr.l1_size) * 8;
         let mut l1_buf = vec![0u8; l1_bytes as usize];
