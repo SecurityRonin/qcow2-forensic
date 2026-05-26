@@ -6,6 +6,8 @@ fn corpus_dir() -> Option<PathBuf> {
     std::env::var("CORPUS_DIR").ok().map(PathBuf::from)
 }
 
+const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data");
+
 #[test]
 fn corpus_sparse_qcow2_opens_and_has_nonzero_size() {
     let Some(dir) = corpus_dir() else { return };
@@ -32,7 +34,23 @@ fn corpus_sparse_qcow2_read_is_stable() {
 }
 
 /// CirrOS 0.6.3 — an independent real-world QCOW2 produced by the CirrOS build system.
-/// This test verifies that an image from a completely separate toolchain parses correctly.
+/// Committed to tests/data/ so this test runs in all CI jobs without CORPUS_DIR.
+#[test]
+fn cirros_committed_opens_and_has_correct_mbr() {
+    let path = std::path::Path::new(DATA_DIR).join("cirros-0.6.3-x86_64-disk.img");
+    if !path.exists() {
+        return;
+    }
+    let mut reader = Qcow2Reader::open(&path).expect("open committed CirrOS");
+    assert!(reader.virtual_disk_size() > 0, "CirrOS virtual_disk_size must be > 0");
+    let mut mbr = [0u8; 512];
+    reader.seek(SeekFrom::Start(0)).expect("seek");
+    reader.read_exact(&mut mbr).expect("read MBR");
+    assert_eq!(mbr[510], 0x55, "CirrOS MBR byte 510 must be 0x55");
+    assert_eq!(mbr[511], 0xAA, "CirrOS MBR byte 511 must be 0xAA");
+}
+
+/// CirrOS via CORPUS_DIR — kept for CI corpus job backward-compatibility.
 #[test]
 fn corpus_cirros_opens_and_has_nonzero_size() {
     let Some(dir) = corpus_dir() else { return };
@@ -42,8 +60,6 @@ fn corpus_cirros_opens_and_has_nonzero_size() {
     }
     let mut reader = Qcow2Reader::open(&path).expect("open cirros");
     assert!(reader.virtual_disk_size() > 0, "CirrOS virtual_disk_size must be > 0");
-
-    // MBR sector: CirrOS has a real partition table.
     let mut mbr = [0u8; 512];
     reader.seek(SeekFrom::Start(0)).expect("seek");
     reader.read_exact(&mut mbr).expect("read MBR");
