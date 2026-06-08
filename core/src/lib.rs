@@ -26,9 +26,26 @@ use header::Qcow2Header;
 /// works on images the reader rejects (encrypted, backing-file, etc.).
 pub fn inspect(path: &Path) -> Result<Qcow2Info, Qcow2Error> {
     let mut file = File::open(path)?;
-    let mut hdr_buf = [0u8; 104];
-    let n = file.read(&mut hdr_buf)?;
+    // Read a generous window so the parser can also reach the header-extension
+    // area and the backing filename, which qemu stores immediately after the
+    // fixed header (well within the first cluster). 8 KiB covers real images;
+    // a short file simply yields a shorter slice (parse is bounds-checked).
+    let mut hdr_buf = [0u8; 8192];
+    let n = read_window(&mut file, &mut hdr_buf)?;
     Qcow2Info::parse(&hdr_buf[..n])
+}
+
+/// Fill `buf` from the start of `file`, returning the number of bytes read.
+/// Handles short reads (small files) by looping until EOF or `buf` is full.
+fn read_window(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
 }
 
 /// Read-only QCOW2 container reader.
