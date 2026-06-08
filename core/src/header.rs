@@ -53,7 +53,7 @@ impl Qcow2Header {
         }
 
         let version = be_u32(data, 4);
-        if version < 2 || version > 3 {
+        if !(2..=3).contains(&version) {
             return Err(Qcow2Error::UnsupportedVersion(version));
         }
 
@@ -128,7 +128,7 @@ impl Qcow2Info {
             return Err(Qcow2Error::BadMagic);
         }
         let version = be_u32(data, 4);
-        if version < 2 || version > 3 {
+        if !(2..=3).contains(&version) {
             return Err(Qcow2Error::UnsupportedVersion(version));
         }
 

@@ -34,7 +34,7 @@ fn corpus_sparse_qcow2_read_is_stable() {
 }
 
 /// CirrOS 0.6.3 — an independent real-world QCOW2 produced by the CirrOS build system.
-/// Committed to tests/data/ so this test runs in all CI jobs without CORPUS_DIR.
+/// Committed to tests/data/ so this test runs in all CI jobs without `CORPUS_DIR`.
 #[test]
 fn cirros_committed_opens_and_has_correct_mbr() {
     let path = std::path::Path::new(DATA_DIR).join("cirros-0.6.3-x86_64-disk.img");
@@ -50,7 +50,7 @@ fn cirros_committed_opens_and_has_correct_mbr() {
     assert_eq!(mbr[511], 0xAA, "CirrOS MBR byte 511 must be 0xAA");
 }
 
-/// CirrOS via CORPUS_DIR — kept for CI corpus job backward-compatibility.
+/// CirrOS via `CORPUS_DIR` — kept for CI corpus job backward-compatibility.
 #[test]
 fn corpus_cirros_opens_and_has_nonzero_size() {
     let Some(dir) = corpus_dir() else { return };

@@ -47,6 +47,9 @@ pub struct Qcow2Reader {
 impl Qcow2Reader {
     /// Open a QCOW2 disk image (v2 or v3, uncompressed, no backing file).
     pub fn open(path: &Path) -> Result<Self, Qcow2Error> {
+        // 8 MiB max L1 table — prevents OOM on crafted images.
+        const MAX_L1_ENTRIES: u32 = 1 << 20;
+
         let mut file = File::open(path)?;
 
         // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes) headers.
@@ -61,7 +64,6 @@ impl Qcow2Reader {
         let l2_mask = l2_entries - 1;
 
         // Load L1 table into memory.
-        const MAX_L1_ENTRIES: u32 = 1 << 20; // 8 MiB max — prevents OOM on crafted images
         if hdr.l1_size > MAX_L1_ENTRIES {
             return Err(Qcow2Error::L1TableTooLarge(hdr.l1_size));
         }
@@ -147,7 +149,7 @@ impl Qcow2Reader {
     /// Read and raw-deflate-decompress a compressed cluster; return the
     /// full `cluster_size` bytes of decompressed data.
     ///
-    /// `compressed_bytes` is an upper bound (nb_sectors × 512); the actual
+    /// `compressed_bytes` is an upper bound (`nb_sectors` × 512); the actual
     /// compressed stream may be shorter, and near the end of the file the read
     /// may hit EOF before reaching `compressed_bytes`. Both are normal.
     fn decompress_cluster(&mut self, file_offset: u64, compressed_bytes: usize) -> io::Result<Vec<u8>> {
@@ -258,7 +260,7 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Build a minimal valid QCOW2 v2 header (72 bytes) with arbitrary cluster_bits.
+    /// Build a minimal valid QCOW2 v2 header (72 bytes) with arbitrary `cluster_bits`.
     fn qcow2_header_bytes(cluster_bits: u32) -> Vec<u8> {
         let mut h = vec![0u8; 72];
         h[0..4].copy_from_slice(&0x5146_49fb_u32.to_be_bytes()); // magic
@@ -391,7 +393,6 @@ mod tests {
     // file byte 1 and reads header bytes instead of returning zeros.
     #[test]
     fn zero_plain_cluster_reads_as_zeros() {
-        use testutil::{CLUSTER_BITS, CLUSTER_SIZE};
         use std::io::Write;
 
         // Build test_qcow2 but with L2[0] = 1 (ZERO_PLAIN) instead of DATA_OFFSET.

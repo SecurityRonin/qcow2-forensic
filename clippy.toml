@@ -6,4 +6,4 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
 # Product/format names that look like code identifiers to doc_markdown.
-doc-valid-idents = ["VMware", "VMDK", "VMFS", "qemu-img", "libvmdk", "seSparse", "COWD", "streamOptimized", "..", "SHA-256", "MD5", "ext4", "NTFS"]
+doc-valid-idents = ["VMware", "VMDK", "VMFS", "qemu-img", "libvmdk", "seSparse", "COWD", "streamOptimized", "..", "SHA-256", "MD5", "ext4", "NTFS", "CirrOS", "QCOW2", "QCOW1"]

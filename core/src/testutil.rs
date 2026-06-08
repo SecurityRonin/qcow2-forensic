@@ -1,6 +1,6 @@
 //! Minimal valid QCOW2 v2 builder for use in tests and downstream crates.
 //!
-//! Uses cluster_bits = 9 (512-byte clusters) so the test file stays small.
+//! Uses `cluster_bits` = 9 (512-byte clusters) so the test file stays small.
 
 use super::header::MAGIC;
 
