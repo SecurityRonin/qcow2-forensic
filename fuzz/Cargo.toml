@@ -9,13 +9,32 @@ cargo-fuzz = true
 
 [workspace]
 
-[[bin]]
-name  = "fuzz_open"
-path  = "fuzz_targets/fuzz_open.rs"
-test  = false
-doc   = false
-
 [dependencies]
 libfuzzer-sys = "0.4"
-qcow2         = { path = "../qcow2" }
-tempfile      = "3"
+qcow2           = { path = "../core", package = "qcow2-core" }
+qcow2-forensic  = { path = "../forensic" }
+tempfile        = "3"
+
+[[bin]]
+name = "fuzz_open"
+path = "fuzz_targets/fuzz_open.rs"
+test = false
+doc  = false
+
+[[bin]]
+name = "fuzz_read"
+path = "fuzz_targets/fuzz_read.rs"
+test = false
+doc  = false
+
+[[bin]]
+name = "fuzz_inspect"
+path = "fuzz_targets/fuzz_inspect.rs"
+test = false
+doc  = false
+
+[[bin]]
+name = "fuzz_forensic"
+path = "fuzz_targets/fuzz_forensic.rs"
+test = false
+doc  = false
