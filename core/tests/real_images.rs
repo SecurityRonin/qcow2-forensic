@@ -69,6 +69,28 @@ fn inspect_detects_internal_snapshot_on_real_image() {
 }
 
 #[test]
+fn snapshots_enumerates_named_snapshot_on_real_image() {
+    if !have_qemu() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let img = p(&dir, "snaps.qcow2");
+    assert!(qemu(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
+    assert!(qemu(&["snapshot", "-c", "alpha", img.to_str().unwrap()]));
+    assert!(qemu(&["snapshot", "-c", "beta", img.to_str().unwrap()]));
+
+    let snaps = qcow2::snapshots(&img).unwrap();
+    let names: Vec<&str> = snaps.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"alpha"), "expected snapshot 'alpha', got {names:?}");
+    assert!(names.contains(&"beta"), "expected snapshot 'beta', got {names:?}");
+    // Every real snapshot carries a non-empty id and a plausible recent timestamp.
+    for s in &snaps {
+        assert!(!s.id.is_empty(), "snapshot id must not be empty");
+        assert!(s.date_unix_secs > 1_500_000_000, "snapshot date looks wrong: {}", s.date_unix_secs);
+    }
+}
+
+#[test]
 fn inspect_detects_encryption_on_real_luks_image() {
     if !have_qemu() {
         return;
