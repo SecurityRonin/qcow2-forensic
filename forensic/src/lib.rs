@@ -53,6 +53,15 @@ pub enum Qcow2Anomaly {
     Corrupt,
     /// The image stores guest data in an external data file (not self-contained).
     ExternalDataFile,
+    /// Clusters reachable through the active L1/L2 mapping have a host refcount
+    /// of 0 — allocated-but-unreferenced data, a candidate for orphaned or
+    /// deleted guest content.
+    OrphanClusters {
+        /// Number of allocated-but-unreferenced clusters detected.
+        count: u64,
+        /// Total allocated data clusters examined (context for the count).
+        allocated: u64,
+    },
 }
 
 impl Qcow2Anomaly {
@@ -63,6 +72,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::Corrupt => Severity::High,
             Qcow2Anomaly::BackingFile { .. }
             | Qcow2Anomaly::Encrypted { .. }
+            | Qcow2Anomaly::OrphanClusters { .. }
             | Qcow2Anomaly::ExternalDataFile => Severity::Medium,
             Qcow2Anomaly::InternalSnapshots { .. }
             | Qcow2Anomaly::Snapshot { .. }
@@ -81,6 +91,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::Dirty => "QCOW2-DIRTY",
             Qcow2Anomaly::Corrupt => "QCOW2-CORRUPT",
             Qcow2Anomaly::ExternalDataFile => "QCOW2-EXTERNAL-DATA",
+            Qcow2Anomaly::OrphanClusters { .. } => "QCOW2-ORPHAN-CLUSTERS",
         }
     }
 
@@ -99,6 +110,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::Dirty => "the dirty bit is set — consistent with the image not having been closed cleanly (in use or crashed)".to_string(),
             Qcow2Anomaly::Corrupt => "the corrupt bit is set — QEMU flagged the image as corrupt".to_string(),
             Qcow2Anomaly::ExternalDataFile => "image stores guest data in an external data file — the data is not self-contained".to_string(),
+            Qcow2Anomaly::OrphanClusters { count, allocated } => format!("{count} of {allocated} allocated cluster(s) are reachable through L1/L2 yet have a host refcount of 0 — consistent with orphaned or deleted guest data left in the image"),
         }
     }
 }
@@ -156,6 +168,21 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
             Qcow2Anomaly::ExternalDataFile => {
                 vec![header("incompatible_features", "external-data".to_string())]
             }
+            Qcow2Anomaly::OrphanClusters { count, allocated } => {
+                let loc = || Some(Location::Field("QCOW2 refcount table".to_string()));
+                vec![
+                    Evidence {
+                        field: "orphan_clusters".to_string(),
+                        value: count.to_string(),
+                        location: loc(),
+                    },
+                    Evidence {
+                        field: "allocated_clusters".to_string(),
+                        value: allocated.to_string(),
+                        location: loc(),
+                    },
+                ]
+            }
         }
     }
 }
@@ -208,8 +235,14 @@ pub fn audit_snapshots(snapshots: &[Qcow2Snapshot]) -> Vec<Qcow2Anomaly> {
 /// Audit a refcount/orphan report, emitting a single `QCOW2-ORPHAN-CLUSTERS`
 /// finding when clusters reachable through L1/L2 have a host refcount of 0.
 #[must_use]
-pub fn audit_orphans(_report: &Qcow2RefcountReport) -> Option<Qcow2Anomaly> {
-    None
+pub fn audit_orphans(report: &Qcow2RefcountReport) -> Option<Qcow2Anomaly> {
+    if report.orphan_clusters == 0 {
+        return None;
+    }
+    Some(Qcow2Anomaly::OrphanClusters {
+        count: report.orphan_clusters,
+        allocated: report.allocated_clusters,
+    })
 }
 
 /// Inspect and audit a QCOW2 image at `path` in one step. Surfaces the header-
