@@ -23,7 +23,12 @@ const FEAT_EXTERNAL_DATA: u64 = 1 << 2;
 pub enum Qcow2Anomaly {
     /// The image references a backing file — it is an overlay/differential and
     /// alone does not contain the full guest data.
-    BackingFile,
+    BackingFile {
+        /// The referenced backing filename, when it could be extracted.
+        name: Option<String>,
+        /// The backing-file format (e.g. "qcow2", "raw"), when recorded.
+        format: Option<String>,
+    },
     /// The image is encrypted; its contents cannot be read without the key.
     Encrypted {
         /// Encryption method byte (1 = AES, 2 = LUKS).
@@ -56,7 +61,7 @@ impl Qcow2Anomaly {
     pub fn severity(&self) -> Severity {
         match self {
             Qcow2Anomaly::Corrupt => Severity::High,
-            Qcow2Anomaly::BackingFile
+            Qcow2Anomaly::BackingFile { .. }
             | Qcow2Anomaly::Encrypted { .. }
             | Qcow2Anomaly::ExternalDataFile => Severity::Medium,
             Qcow2Anomaly::InternalSnapshots { .. }
@@ -69,7 +74,7 @@ impl Qcow2Anomaly {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
-            Qcow2Anomaly::BackingFile => "QCOW2-BACKING-FILE",
+            Qcow2Anomaly::BackingFile { .. } => "QCOW2-BACKING-FILE",
             Qcow2Anomaly::Encrypted { .. } => "QCOW2-ENCRYPTED",
             Qcow2Anomaly::InternalSnapshots { .. } => "QCOW2-INTERNAL-SNAPSHOTS",
             Qcow2Anomaly::Snapshot { .. } => "QCOW2-SNAPSHOT",
@@ -83,7 +88,11 @@ impl Qcow2Anomaly {
     #[must_use]
     pub fn note(&self) -> String {
         match self {
-            Qcow2Anomaly::BackingFile => "image references a backing file — it is an overlay and does not alone contain the full guest data".to_string(),
+            Qcow2Anomaly::BackingFile { name, format } => match (name, format) {
+                (Some(n), Some(f)) => format!("image references backing file `{n}` (format {f}) — it is an overlay and does not alone contain the full guest data"),
+                (Some(n), None) => format!("image references backing file `{n}` — it is an overlay and does not alone contain the full guest data"),
+                (None, _) => "image references a backing file — it is an overlay and does not alone contain the full guest data".to_string(),
+            },
             Qcow2Anomaly::Encrypted { method } => format!("image is encrypted (method {method}) — contents are inaccessible without the key"),
             Qcow2Anomaly::InternalSnapshots { count } => format!("image carries {count} internal snapshot(s) — additional captured guest states to examine"),
             Qcow2Anomaly::Snapshot { name, date_unix_secs } => format!("internal snapshot `{name}` captured at unix time {date_unix_secs} — a recoverable point-in-time guest state to examine"),
@@ -130,7 +139,16 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
                     },
                 ]
             }
-            Qcow2Anomaly::BackingFile => vec![header("backing_file_offset", "present".to_string())],
+            Qcow2Anomaly::BackingFile { name, format } => {
+                let mut ev = vec![header(
+                    "backing_file",
+                    name.clone().unwrap_or_else(|| "present".to_string()),
+                )];
+                if let Some(f) = format {
+                    ev.push(header("backing_format", f.clone()));
+                }
+                ev
+            }
             Qcow2Anomaly::Encrypted { method } => vec![header("crypt_method", method.to_string())],
             Qcow2Anomaly::InternalSnapshots { count } => vec![header("nb_snapshots", count.to_string())],
             Qcow2Anomaly::Dirty => vec![header("incompatible_features", "dirty".to_string())],
@@ -147,7 +165,10 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
 pub fn audit(info: &Qcow2Info) -> Vec<Qcow2Anomaly> {
     let mut out = Vec::new();
     if info.has_backing_file {
-        out.push(Qcow2Anomaly::BackingFile);
+        out.push(Qcow2Anomaly::BackingFile {
+            name: info.backing_file.clone(),
+            format: info.backing_format.clone(),
+        });
     }
     if info.encryption_method != 0 {
         out.push(Qcow2Anomaly::Encrypted {
@@ -239,11 +260,7 @@ mod tests {
             .iter()
             .find(|a| a.code() == "QCOW2-BACKING-FILE")
             .expect("backing-file finding");
-        assert!(
-            bf.note().contains("base.qcow2"),
-            "note must name the backing file: {}",
-            bf.note()
-        );
+        assert!(bf.note().contains("base.qcow2"), "note: {}", bf.note());
         let mut joined = String::new();
         for e in &bf.evidence() {
             joined.push_str(&e.field);
@@ -251,14 +268,8 @@ mod tests {
             joined.push_str(&e.value);
             joined.push(';');
         }
-        assert!(
-            joined.contains("base.qcow2"),
-            "evidence must carry the backing filename: {joined}"
-        );
-        assert!(
-            joined.contains("qcow2"),
-            "evidence should carry the backing format: {joined}"
-        );
+        assert!(joined.contains("base.qcow2"), "evidence name: {joined}");
+        assert!(joined.contains("qcow2"), "evidence format: {joined}");
     }
 
     #[test]
@@ -267,6 +278,18 @@ mod tests {
         i.has_backing_file = true; // present but name not captured
         let out = audit(&i);
         assert!(out.iter().any(|a| a.code() == "QCOW2-BACKING-FILE"));
+    }
+
+    #[test]
+    fn backing_file_name_without_format_is_noted() {
+        let mut i = info();
+        i.has_backing_file = true;
+        i.backing_file = Some("base.qcow2".to_string());
+        i.backing_format = None; // name known, format not recorded
+        let out = audit(&i);
+        let bf = out.iter().find(|a| a.code() == "QCOW2-BACKING-FILE").unwrap();
+        assert!(bf.note().contains("base.qcow2"));
+        assert!(!bf.note().contains("format "), "no format clause when absent: {}", bf.note());
     }
 
     #[test]
@@ -318,7 +341,9 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(&h).unwrap();
         let anomalies = audit_path(f.path()).unwrap();
-        assert!(anomalies.contains(&Qcow2Anomaly::BackingFile));
+        assert!(anomalies
+            .iter()
+            .any(|a| matches!(a, Qcow2Anomaly::BackingFile { .. })));
     }
 
     #[test]

@@ -24,6 +24,36 @@ fn qemu(args: &[&str]) -> bool {
 }
 
 #[test]
+fn audit_path_names_the_backing_file_on_real_overlay() {
+    if !have_qemu() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.qcow2");
+    let overlay = dir.path().join("overlay.qcow2");
+    assert!(qemu(&["create", "-f", "qcow2", base.to_str().unwrap(), "10M"]));
+    assert!(qemu(&[
+        "create", "-f", "qcow2", "-b",
+        base.to_str().unwrap(), "-F", "qcow2",
+        overlay.to_str().unwrap()
+    ]));
+
+    let anomalies = audit_path(&overlay).unwrap();
+    let bf = anomalies
+        .iter()
+        .find_map(|a| match a {
+            Qcow2Anomaly::BackingFile { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .expect("backing-file finding");
+    assert_eq!(
+        bf.as_deref().map(|n| n.contains("base.qcow2")),
+        Some(true),
+        "audit_path must name the backing file, got {bf:?}"
+    );
+}
+
+#[test]
 fn audit_path_surfaces_per_snapshot_findings_on_real_image() {
     if !have_qemu() {
         return;

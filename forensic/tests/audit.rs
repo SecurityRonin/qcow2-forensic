@@ -41,7 +41,7 @@ fn clean_image_has_no_anomalies() {
 fn backing_file_is_flagged() {
     let anomalies = audit(&info(|i| i.has_backing_file = true));
     assert_eq!(anomalies.len(), 1);
-    assert!(matches!(anomalies[0], Qcow2Anomaly::BackingFile));
+    assert!(matches!(anomalies[0], Qcow2Anomaly::BackingFile { .. }));
     let f = anomalies[0].to_finding(src());
     assert_eq!(f.code, "QCOW2-BACKING-FILE");
     assert!(f.severity.is_some());
