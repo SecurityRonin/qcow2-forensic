@@ -378,6 +378,29 @@ mod tests {
     }
 
     #[test]
+    fn qcow1_version_is_flagged() {
+        let mut i = info();
+        i.version = 1;
+        let out = audit(&i);
+        let a = out
+            .iter()
+            .find(|a| a.code() == "QCOW2-QCOW1")
+            .expect("v1 finding");
+        assert_eq!(a.severity(), Severity::Low);
+        assert!(a.note().to_lowercase().contains("version 1") || a.note().contains("QCOW1"));
+        assert!(!a.evidence().is_empty());
+    }
+
+    #[test]
+    fn qcow2_and_qcow3_are_not_flagged_as_v1() {
+        for v in [2u32, 3] {
+            let mut i = info();
+            i.version = v;
+            assert!(audit(&i).iter().all(|a| a.code() != "QCOW2-QCOW1"));
+        }
+    }
+
+    #[test]
     fn orphans_yield_a_medium_finding_with_the_count() {
         let a = audit_orphans(&report(100, 7)).expect("orphan finding");
         assert_eq!(a.code(), "QCOW2-ORPHAN-CLUSTERS");
