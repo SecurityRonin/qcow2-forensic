@@ -134,6 +134,28 @@ impl Qcow2Info {
             return Err(Qcow2Error::BadMagic);
         }
         let version = be_u32(data, 4);
+
+        // QCOW1 (v1) shares the magic and the early header layout (backing-file
+        // offset/size at 8/16, virtual size at 24) but diverges afterwards
+        // (cluster_bits is a u8 at offset 32, crypt at 36, no snapshots/feature
+        // bits). Report it distinctly with only the fields that are reliably at
+        // matching offsets, so an analyzer can flag the legacy format without
+        // trusting v2/v3-specific fields that do not exist in v1.
+        if version == 1 {
+            return Ok(Qcow2Info {
+                version,
+                cluster_bits: 0,
+                virtual_disk_size: be_u64(data, 24),
+                l1_size: 0,
+                has_backing_file: be_u64(data, 8) != 0,
+                encryption_method: be_u32(data, 36),
+                snapshot_count: 0,
+                incompatible_features: 0,
+                backing_file: backing_file_name(data),
+                backing_format: None,
+            });
+        }
+
         if !(2..=3).contains(&version) {
             return Err(Qcow2Error::UnsupportedVersion(version));
         }
@@ -356,6 +378,31 @@ mod tests {
         let info = Qcow2Info::parse(&d).unwrap();
         // Either capped to what fits in the window, or None — never a panic.
         assert!(info.backing_file.is_some() || info.backing_file.is_none());
+    }
+
+    #[test]
+    fn qcow1_version_is_reported_leniently() {
+        let mut d = vec![0u8; 72];
+        d[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        d[4..8].copy_from_slice(&1u32.to_be_bytes()); // version 1
+        d[8..16].copy_from_slice(&0u64.to_be_bytes()); // no backing file
+        d[24..32].copy_from_slice(&(4u64 << 20).to_be_bytes()); // virtual size
+        let info = Qcow2Info::parse(&d).unwrap();
+        assert_eq!(info.version, 1);
+        assert_eq!(info.virtual_disk_size, 4 << 20);
+        assert!(!info.has_backing_file);
+        assert!(info.backing_format.is_none());
+    }
+
+    #[test]
+    fn unsupported_version_still_errors() {
+        let mut d = vec![0u8; 72];
+        d[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        d[4..8].copy_from_slice(&7u32.to_be_bytes());
+        assert!(matches!(
+            Qcow2Info::parse(&d),
+            Err(Qcow2Error::UnsupportedVersion(7))
+        ));
     }
 
     #[test]
