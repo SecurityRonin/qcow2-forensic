@@ -95,6 +95,21 @@ fn refcount_report_on_real_clean_image_finds_no_orphans() {
 }
 
 #[test]
+fn inspect_reports_qcow1_version_distinctly_on_real_image() {
+    if !have_qemu() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let img = p(&dir, "legacy.qcow");
+    // Some qemu builds drop the legacy qcow (v1) writer — skip if unavailable.
+    if !qemu(&["create", "-f", "qcow", img.to_str().unwrap(), "10M"]) {
+        return;
+    }
+    let info = qcow2::inspect(&img).unwrap();
+    assert_eq!(info.version, 1, "a real qcow (v1) image must report version 1");
+}
+
+#[test]
 fn inspect_extracts_backing_file_name_and_format_on_real_overlay() {
     if !have_qemu() {
         return;
