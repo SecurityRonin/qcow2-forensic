@@ -78,3 +78,21 @@ curl -L -o qcow2/tests/data/cirros-0.6.3-x86_64-disk.img \
 # Run validation tests
 cargo test
 ```
+
+## Forensic inspection validation (`inspect()` + auditor)
+
+The lenient header inspector and the `qcow2-forensic` auditor are validated
+against **real qemu-img-produced images** carrying each forensic feature, plus
+the real CirrOS cloud image as the clean baseline (`core/tests/real_images.rs`,
+gated on `qemu-img`):
+
+| Image (qemu-img) | Expected `inspect()` fact | Auditor finding |
+|---|---|---|
+| `create -b base.qcow2` overlay | `has_backing_file = true` | `QCOW2-BACKING-FILE` |
+| `snapshot -c snap1` | `snapshot_count >= 1` | `QCOW2-INTERNAL-SNAPSHOTS` |
+| `-o encrypt.format=luks` | `encryption_method != 0` | `QCOW2-ENCRYPTED` |
+| CirrOS 0.6.3 (clean) | v2/v3, no backing/encryption | none |
+
+The auditor's six anomaly kinds are additionally exercised end-to-end against
+crafted headers, and the full `inspect → audit` pipeline is fuzzed
+(`fuzz_inspect`, `fuzz_forensic`) with the invariant that no input may panic.

@@ -1,94 +1,98 @@
-[![Crates.io](https://img.shields.io/crates/v/qcow2.svg)](https://crates.io/crates/qcow2)
-[![Docs.rs](https://img.shields.io/docsrs/qcow2)](https://docs.rs/qcow2)
+[![Crates.io (core)](https://img.shields.io/crates/v/qcow2-core.svg?label=qcow2-core)](https://crates.io/crates/qcow2-core)
+[![Crates.io (forensic)](https://img.shields.io/crates/v/qcow2-forensic.svg?label=qcow2-forensic)](https://crates.io/crates/qcow2-forensic)
+[![Docs.rs](https://img.shields.io/docsrs/qcow2-core?label=docs.rs)](https://docs.rs/qcow2-core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/SecurityRonin/qcow2/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/qcow2/actions/workflows/ci.yml)
+[![CI](https://github.com/SecurityRonin/qcow2-forensic/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/qcow2-forensic/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
-**Pure-Rust read-only QCOW2 v2/v3 disk image reader.**
+**Pure-Rust QCOW2 forensics: read any QEMU/KVM/libvirt disk image, and flag what an examiner needs to know about it — in two lines.**
 
-Decodes QCOW2 containers produced by QEMU, KVM, and libvirt and exposes a `Read + Seek` interface over the virtual sector stream. Implements the two-level L1→L2 cluster lookup matching QEMU's own design, with support for deflate-compressed clusters and sparse zero regions. Zero unsafe code, no C bindings.
+QCOW2 images hide things a raw `dd` never would: a backing file the evidence silently depends on, internal snapshots of earlier guest states, an encryption header, or QEMU's own *dirty* / *corrupt* flags. This workspace gives you a panic-free reader **and** an auditor that surfaces those facts as graded findings.
+
+```rust
+// What is this image, and what should I worry about? — no decoding, no key needed.
+for finding in qcow2_forensic::audit_path("evidence.qcow2".as_ref())? {
+    println!("[{:?}] {}", finding.severity(), finding.note());
+}
+// [Medium] image references a backing file — it is an overlay and does not alone contain the full guest data
+// [Low]    image carries 3 internal snapshot(s) — additional captured guest states to examine
+// [High]   the corrupt bit is set — QEMU flagged the image as corrupt
+```
 
 ```toml
 [dependencies]
-qcow2 = "0.1"
+qcow2-core     = "0.2"   # the reader: Read + Seek over the virtual disk
+qcow2-forensic = "0.1"   # the auditor: header anomalies as report::Finding
 ```
 
 ---
 
-## Usage
+## Two crates, one job
 
-### Open a QCOW2 image and read sectors
+| Crate | Role | Use it when you want to… |
+|-------|------|--------------------------|
+| **`qcow2-core`** (`use qcow2::…`) | Reader | Decode the virtual disk — `Read + Seek`, v2/v3, deflate clusters, sparse zeros — or `inspect()` the header without decoding. |
+| **`qcow2-forensic`** | Analyzer | Grade the image's header facts into severity-ranked `forensicnomicon::report::Finding`s. |
+
+### Read the virtual disk
 
 ```rust
 use qcow2::Qcow2Reader;
 use std::io::{Read, Seek, SeekFrom};
 
-let mut reader = Qcow2Reader::open("disk.qcow2")?;
+let mut reader = Qcow2Reader::open("disk.qcow2".as_ref())?;
+println!("virtual size: {} bytes", reader.virtual_disk_size());
 
-println!("Virtual disk size: {} bytes", reader.virtual_disk_size());
-
-// Read the first sector
 let mut sector = [0u8; 512];
-reader.read_exact(&mut sector)?;
-
-// Seek anywhere — two-level cluster table lookup
-reader.seek(SeekFrom::Start(1_048_576))?;
+reader.read_exact(&mut sector)?;          // first sector
+reader.seek(SeekFrom::Start(1 << 20))?;   // two-level L1→L2 cluster lookup
 ```
 
-### Pass to a filesystem crate
+`Qcow2Reader` is `Read + Seek`, so it drops straight into any filesystem crate that takes a reader.
 
-`Qcow2Reader` implements `Read + Seek`, so it drops directly into any crate that accepts a reader:
+### Inspect without decoding (works on images the reader can't open)
 
 ```rust
-use qcow2::Qcow2Reader;
-
-let reader = Qcow2Reader::open("disk.qcow2")?;
-// e.g. ext4fs_forensic::Filesystem::open(reader)?;
+let info = qcow2::inspect("encrypted.qcow2".as_ref())?;
+assert!(info.encryption_method != 0);     // header facts even when the data is inaccessible
+assert!(info.has_backing_file);
 ```
+
+`inspect()` is deliberately lenient — it reports backing files, encryption, snapshots, and the v3 incompatible-feature bits instead of refusing, so the auditor can speak to images the strict reader rejects.
 
 ---
 
-## Supported features
+## What the auditor flags
 
-| Feature | Supported |
-|---------|:---------:|
-| QCOW2 version 2 | ✓ |
-| QCOW2 version 3 | ✓ |
-| Unallocated (zero-filled) clusters | ✓ |
-| Deflate-compressed clusters | ✓ |
-| Standard cluster data | ✓ |
-| Backing file (overlay images) | planned |
-| Encryption | not planned |
-| External data file (v3 extension) | not planned |
+| Code | Severity | Meaning |
+|------|:--------:|---------|
+| `QCOW2-CORRUPT` | High | QEMU set the corrupt incompatible-feature bit |
+| `QCOW2-BACKING-FILE` | Medium | Overlay/differential image — not self-contained |
+| `QCOW2-ENCRYPTED` | Medium | AES/LUKS encrypted — contents inaccessible without the key |
+| `QCOW2-EXTERNAL-DATA` | Medium | Guest data stored in an external data file |
+| `QCOW2-INTERNAL-SNAPSHOTS` | Low | Additional captured guest states to examine |
+| `QCOW2-DIRTY` | Low | Not closed cleanly (in use or crashed) |
 
-Read-only. Backing file chains and encryption are out of scope for a forensic reader.
+Each is an *observation* ("consistent with …") on the shared [`forensicnomicon`](https://crates.io/crates/forensicnomicon) report model, so QCOW2 findings aggregate uniformly with the rest of a disk-forensic run. The examiner draws the conclusions.
+
+---
+
+## Trust, but verify
+
+Read-only and panic-free by construction: `#![forbid(unsafe_code)]`, no `unwrap`/`expect`/unchecked indexing in production parsers, every length/offset bounds-checked, and `cargo fuzz` targets (`open`/`read`/`inspect`/`forensic`) that must never panic on crafted bytes. Decoding is **differentially validated against `qemu-img convert`** and a real CirrOS cloud image; `inspect()` is validated against real qemu-img-produced backing-file, snapshot, and LUKS images. See [`docs/validation.md`](docs/validation.md).
 
 ---
 
 ## Related crates
 
-### Container readers
-
-| Crate | Format | Notes |
-|-------|--------|-------|
-| [`ewf`](https://github.com/SecurityRonin/ewf) | E01 / EWF / Ex01 | Dominant professional forensic acquisition format |
-| [`aff4`](https://github.com/SecurityRonin/aff4) | AFF4 v1 | Evimetry / aff4-imager forensic disk images with Map streams |
-| [`vmdk`](https://github.com/SecurityRonin/vmdk) | VMware VMDK | Monolithic sparse disk images from VMware Workstation / ESXi |
-| [`vhdx`](https://github.com/SecurityRonin/vhdx) | Microsoft VHDX | Hyper-V, Windows 8+, WSL2, Azure disk container |
-| [`vhd`](https://github.com/SecurityRonin/vhd) | Legacy VHD | Virtual PC / Hyper-V Generation-1 fixed and dynamic disk images |
-| [`ufed`](https://github.com/SecurityRonin/ufed) | Cellebrite UFED | Physical mobile device dumps with UFD XML segment mapping |
-| [`dd`](https://github.com/SecurityRonin/dd) | Raw / flat / gz | dd, dcfldd, and gzip-wrapped raw images |
-| [`iso9660-forensic`](https://github.com/SecurityRonin/iso9660-forensic) | ISO 9660 | Optical disc images: multi-session, UDF bridge, Rock Ridge, Joliet, El Torito |
-| [`dmg`](https://github.com/SecurityRonin/dmg) | Apple DMG / UDIF | macOS disk images with koly trailer, mish block tables, zlib decompression |
-| [`dar`](https://github.com/SecurityRonin/dar) | DAR archive | Disk ARchiver archives with catalog index and CRC32 validation |
-
-### Forensic analysers
-
-| Crate | Format | Notes |
-|-------|--------|-------|
-| [`ewf-forensic`](https://github.com/SecurityRonin/ewf-forensic) | E01 | Structural integrity audit, Adler-32 / MD5 hash verification, and in-memory repair |
-| [`vhdx-forensic`](https://github.com/SecurityRonin/vhdx-forensic) | VHDX | Forensic integrity analyser and in-memory repair tool for VHDX containers |
+Part of the SecurityRonin forensic fleet — each container format is a `*-core` reader plus a `*-forensic` analyzer on the shared `forensicnomicon` report model:
+[`ewf-forensic`](https://github.com/SecurityRonin/ewf-forensic) (E01) ·
+[`vmdk-forensic`](https://github.com/SecurityRonin/vmdk-forensic) (VMware) ·
+[`vhdx-forensic`](https://github.com/SecurityRonin/vhdx-forensic) (Hyper-V) ·
+[`ntfs-forensic`](https://github.com/SecurityRonin/ntfs-forensic) (NTFS) ·
+[`iso9660-forensic`](https://github.com/SecurityRonin/iso9660-forensic) (optical) ·
+[`disk-forensic`](https://github.com/SecurityRonin/disk-forensic) (the `disk4n6` orchestrator).
 
 ---
 
-[Privacy Policy](https://securityronin.github.io/qcow2/privacy/) · [Terms of Service](https://securityronin.github.io/qcow2/terms/) · © 2026 Security Ronin Ltd
+[Privacy Policy](https://securityronin.github.io/qcow2-forensic/privacy/) · [Terms of Service](https://securityronin.github.io/qcow2-forensic/terms/) · © 2026 Security Ronin Ltd
