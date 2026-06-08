@@ -11,7 +11,7 @@
 use std::path::Path;
 
 pub use forensicnomicon::report::Severity;
-pub use qcow2::{Qcow2Error, Qcow2Info, Qcow2Snapshot};
+pub use qcow2::{Qcow2Error, Qcow2Info, Qcow2RefcountReport, Qcow2Snapshot};
 
 // v3 incompatible-feature bits (QCOW2 spec §4).
 const FEAT_DIRTY: u64 = 1 << 0;
@@ -205,12 +205,21 @@ pub fn audit_snapshots(snapshots: &[Qcow2Snapshot]) -> Vec<Qcow2Anomaly> {
         .collect()
 }
 
-/// Inspect and audit a QCOW2 image at `path` in one step. Surfaces both the
-/// header-level anomalies and one per-snapshot finding. Malformed input surfaces
-/// as an error rather than silent emptiness.
+/// Audit a refcount/orphan report, emitting a single `QCOW2-ORPHAN-CLUSTERS`
+/// finding when clusters reachable through L1/L2 have a host refcount of 0.
+#[must_use]
+pub fn audit_orphans(_report: &Qcow2RefcountReport) -> Option<Qcow2Anomaly> {
+    None
+}
+
+/// Inspect and audit a QCOW2 image at `path` in one step. Surfaces the header-
+/// level anomalies, one per-snapshot finding, and an orphan-cluster finding when
+/// allocated-but-unreferenced clusters are present. Malformed input surfaces as
+/// an error rather than silent emptiness.
 pub fn audit_path(path: &Path) -> Result<Vec<Qcow2Anomaly>, Qcow2Error> {
     let mut out = audit(&qcow2::inspect(path)?);
     out.extend(audit_snapshots(&qcow2::snapshots(path)?));
+    out.extend(audit_orphans(&qcow2::refcount_report(path)?));
     Ok(out)
 }
 
@@ -318,6 +327,51 @@ mod tests {
             assert!(!f.note.is_empty());
             assert!(!f.evidence.is_empty());
         }
+    }
+
+    fn report(allocated: u64, orphans: u64) -> Qcow2RefcountReport {
+        Qcow2RefcountReport {
+            refcount_order: 4,
+            refcount_table_offset: 65_536,
+            refcount_table_clusters: 1,
+            allocated_clusters: allocated,
+            orphan_clusters: orphans,
+        }
+    }
+
+    #[test]
+    fn no_orphans_yields_no_finding() {
+        assert!(audit_orphans(&report(100, 0)).is_none());
+    }
+
+    #[test]
+    fn orphans_yield_a_medium_finding_with_the_count() {
+        let a = audit_orphans(&report(100, 7)).expect("orphan finding");
+        assert_eq!(a.code(), "QCOW2-ORPHAN-CLUSTERS");
+        assert_eq!(a.severity(), Severity::Medium);
+        assert!(a.note().contains('7'), "note must carry the count: {}", a.note());
+        let mut joined = String::new();
+        for e in &a.evidence() {
+            joined.push_str(&e.field);
+            joined.push('=');
+            joined.push_str(&e.value);
+            joined.push(';');
+        }
+        assert!(joined.contains('7'), "evidence must carry the count: {joined}");
+    }
+
+    #[test]
+    fn orphan_anomaly_round_trips_to_a_finding() {
+        let src = Source {
+            analyzer: "qcow2-forensic".to_string(),
+            scope: "image".to_string(),
+            version: None,
+        };
+        let a = audit_orphans(&report(10, 3)).unwrap();
+        let f = a.to_finding(src);
+        assert_eq!(f.code, "QCOW2-ORPHAN-CLUSTERS");
+        assert_eq!(f.severity, Some(Severity::Medium));
+        assert!(!f.evidence.is_empty());
     }
 
     #[test]
