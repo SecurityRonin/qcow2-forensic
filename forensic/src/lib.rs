@@ -11,7 +11,7 @@
 use std::path::Path;
 
 pub use forensicnomicon::report::Severity;
-pub use qcow2::{Qcow2Error, Qcow2Info};
+pub use qcow2::{Qcow2Error, Qcow2Info, Qcow2Snapshot};
 
 // v3 incompatible-feature bits (QCOW2 spec §4).
 const FEAT_DIRTY: u64 = 1 << 0;
@@ -139,6 +139,13 @@ pub fn audit(info: &Qcow2Info) -> Vec<Qcow2Anomaly> {
     out
 }
 
+/// Audit an enumerated snapshot list, emitting one `QCOW2-SNAPSHOT` finding per
+/// snapshot with its name and creation timestamp.
+#[must_use]
+pub fn audit_snapshots(_snapshots: &[Qcow2Snapshot]) -> Vec<Qcow2Anomaly> {
+    Vec::new()
+}
+
 /// Inspect and audit a QCOW2 image at `path` in one step. Malformed input
 /// surfaces as an error rather than silent emptiness.
 pub fn audit_path(path: &Path) -> Result<Vec<Qcow2Anomaly>, Qcow2Error> {
@@ -235,5 +242,83 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(b"definitely not a qcow2 image header").unwrap();
         assert!(audit_path(f.path()).is_err());
+    }
+
+    fn snap(name: &str, secs: u32) -> Qcow2Snapshot {
+        Qcow2Snapshot {
+            id: "1".to_string(),
+            name: name.to_string(),
+            date_unix_secs: secs,
+            date_nsecs: 0,
+            vm_state_size: 0,
+        }
+    }
+
+    #[test]
+    fn audit_snapshots_emits_one_finding_per_snapshot() {
+        let snaps = vec![snap("alpha", 1_700_000_000), snap("beta", 1_700_000_050)];
+        let out = audit_snapshots(&snaps);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|a| a.code() == "QCOW2-SNAPSHOT"));
+    }
+
+    #[test]
+    fn audit_snapshots_empty_yields_nothing() {
+        assert!(audit_snapshots(&[]).is_empty());
+    }
+
+    #[test]
+    fn snapshot_finding_carries_name_and_timestamp_in_evidence() {
+        let out = audit_snapshots(&[snap("alpha", 1_700_000_000)]);
+        let a = &out[0];
+        assert_eq!(a.code(), "QCOW2-SNAPSHOT");
+        assert!(a.severity() == Severity::Low || a.severity() == Severity::Info);
+        assert!(a.note().contains("alpha"), "note must name the snapshot: {}", a.note());
+        let ev = a.evidence();
+        let joined: String = ev.iter().map(|e| format!("{}={}", e.field, e.value)).collect();
+        assert!(joined.contains("alpha"), "evidence must carry the name: {joined}");
+        assert!(joined.contains("1700000000"), "evidence must carry the timestamp: {joined}");
+    }
+
+    #[test]
+    fn snapshot_anomaly_round_trips_to_a_finding() {
+        let src = Source {
+            analyzer: "qcow2-forensic".to_string(),
+            scope: "image".to_string(),
+            version: None,
+        };
+        let out = audit_snapshots(&[snap("alpha", 1_700_000_000)]);
+        let f = out[0].to_finding(src);
+        assert_eq!(f.code, "QCOW2-SNAPSHOT");
+        assert!(f.severity.is_some());
+        assert!(!f.note.is_empty());
+        assert!(!f.evidence.is_empty());
+    }
+
+    #[test]
+    fn audit_path_surfaces_per_snapshot_findings_on_real_image() {
+        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
+        if !std::path::Path::new(QEMU_IMG).exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("snaps.qcow2");
+        let run = |args: &[&str]| {
+            std::process::Command::new(QEMU_IMG)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(run(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
+        assert!(run(&["snapshot", "-c", "alpha", img.to_str().unwrap()]));
+
+        let anomalies = audit_path(&img).unwrap();
+        let snap_findings: Vec<&Qcow2Anomaly> = anomalies
+            .iter()
+            .filter(|a| a.code() == "QCOW2-SNAPSHOT")
+            .collect();
+        assert_eq!(snap_findings.len(), 1, "expected one per-snapshot finding");
+        assert!(snap_findings[0].note().contains("alpha"));
     }
 }
