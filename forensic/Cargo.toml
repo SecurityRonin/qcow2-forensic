@@ -1,6 +1,6 @@
 [package]
 name = "qcow2-forensic"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Forensic anomaly auditor for QCOW2 images — backing files, encryption, internal snapshots, dirty/corrupt feature bits as graded report::Finding, built on qcow2-core"
@@ -13,7 +13,7 @@ homepage = "https://github.com/SecurityRonin/qcow2-forensic"
 documentation = "https://docs.rs/qcow2-forensic"
 
 [dependencies]
-qcow2 = { version = "0.2.0", path = "../core", package = "qcow2-core" }
+qcow2 = { version = "0.3.0", path = "../core", package = "qcow2-core" }
 forensicnomicon = "0.3.1"
 
 [dev-dependencies]

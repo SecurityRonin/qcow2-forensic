@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "qcow2-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "proptest",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "qcow2-forensic"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "forensicnomicon",
  "qcow2-core",

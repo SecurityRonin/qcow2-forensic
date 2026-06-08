@@ -1,6 +1,6 @@
 [package]
 name         = "qcow2-core"
-version      = "0.2.0"
+version      = "0.3.0"
 edition      = "2021"
 rust-version = "1.85"
 description  = "Pure-Rust read-only QCOW2 (QEMU Copy-On-Write v2/v3) disk image reader"
