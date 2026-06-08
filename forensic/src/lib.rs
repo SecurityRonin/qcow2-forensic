@@ -209,6 +209,8 @@ mod tests {
             encryption_method: 0,
             snapshot_count: 0,
             incompatible_features: 0,
+            backing_file: None,
+            backing_format: None,
         }
     }
 

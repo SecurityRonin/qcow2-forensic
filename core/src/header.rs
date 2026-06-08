@@ -114,6 +114,12 @@ pub struct Qcow2Info {
     /// v3 incompatible-feature bitmap (0 on v2). Bit 0 = dirty, 1 = corrupt,
     /// 2 = external data file, 3 = compression type, 4 = extended L2.
     pub incompatible_features: u64,
+    /// Backing-file name (overlay/differential base image), if present and
+    /// reachable in the inspected window. `None` when there is no backing file.
+    pub backing_file: Option<String>,
+    /// Backing-file format name from the header-extension area (extension type
+    /// `0xE2792ACA`), e.g. "qcow2" or "raw". `None` when absent.
+    pub backing_format: Option<String>,
 }
 
 impl Qcow2Info {
@@ -154,6 +160,8 @@ impl Qcow2Info {
             encryption_method,
             snapshot_count,
             incompatible_features,
+            backing_file: None,
+            backing_format: None,
         })
     }
 }

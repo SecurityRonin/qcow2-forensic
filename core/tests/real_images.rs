@@ -69,6 +69,39 @@ fn inspect_detects_internal_snapshot_on_real_image() {
 }
 
 #[test]
+fn inspect_extracts_backing_file_name_and_format_on_real_overlay() {
+    if !have_qemu() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let base = p(&dir, "base.qcow2");
+    let overlay = p(&dir, "overlay.qcow2");
+    assert!(qemu(&["create", "-f", "qcow2", base.to_str().unwrap(), "10M"]));
+    assert!(qemu(&[
+        "create", "-f", "qcow2", "-b",
+        base.to_str().unwrap(), "-F", "qcow2",
+        overlay.to_str().unwrap()
+    ]));
+
+    let info = qcow2::inspect(&overlay).unwrap();
+    let backing = info.backing_file.expect("overlay must expose a backing filename");
+    assert!(
+        backing.contains("base.qcow2"),
+        "backing filename should reference base.qcow2, got {backing:?}"
+    );
+    assert_eq!(
+        info.backing_format.as_deref(),
+        Some("qcow2"),
+        "backing format should be the qcow2 recorded via -F"
+    );
+
+    // The standalone base image has neither.
+    let base_info = qcow2::inspect(&base).unwrap();
+    assert!(base_info.backing_file.is_none());
+    assert!(base_info.backing_format.is_none());
+}
+
+#[test]
 fn snapshots_enumerates_named_snapshot_on_real_image() {
     if !have_qemu() {
         return;

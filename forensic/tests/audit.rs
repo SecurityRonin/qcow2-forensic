@@ -25,6 +25,8 @@ fn info(mutate: impl FnOnce(&mut Qcow2Info)) -> Qcow2Info {
         encryption_method: 0,
         snapshot_count: 0,
         incompatible_features: 0,
+        backing_file: None,
+        backing_format: None,
     };
     mutate(&mut i);
     i
