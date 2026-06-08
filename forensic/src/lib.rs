@@ -229,6 +229,47 @@ mod tests {
     }
 
     #[test]
+    fn backing_file_finding_names_the_referenced_image() {
+        let mut i = info();
+        i.has_backing_file = true;
+        i.backing_file = Some("base.qcow2".to_string());
+        i.backing_format = Some("qcow2".to_string());
+        let out = audit(&i);
+        let bf = out
+            .iter()
+            .find(|a| a.code() == "QCOW2-BACKING-FILE")
+            .expect("backing-file finding");
+        assert!(
+            bf.note().contains("base.qcow2"),
+            "note must name the backing file: {}",
+            bf.note()
+        );
+        let mut joined = String::new();
+        for e in &bf.evidence() {
+            joined.push_str(&e.field);
+            joined.push('=');
+            joined.push_str(&e.value);
+            joined.push(';');
+        }
+        assert!(
+            joined.contains("base.qcow2"),
+            "evidence must carry the backing filename: {joined}"
+        );
+        assert!(
+            joined.contains("qcow2"),
+            "evidence should carry the backing format: {joined}"
+        );
+    }
+
+    #[test]
+    fn backing_file_without_name_still_emits_a_generic_finding() {
+        let mut i = info();
+        i.has_backing_file = true; // present but name not captured
+        let out = audit(&i);
+        assert!(out.iter().any(|a| a.code() == "QCOW2-BACKING-FILE"));
+    }
+
+    #[test]
     fn every_anomaly_kind_is_emitted_and_round_trips_to_a_finding() {
         let anomalies = all_anomalies();
         let codes: Vec<&str> = anomalies.iter().map(Observation::code).collect();
