@@ -62,6 +62,9 @@ pub enum Qcow2Anomaly {
         /// Total allocated data clusters examined (context for the count).
         allocated: u64,
     },
+    /// The image uses the legacy QCOW1 (v1) format — an obsolete container
+    /// predating QCOW2's refcounts, snapshots, and feature bits.
+    LegacyQcow1,
 }
 
 impl Qcow2Anomaly {
@@ -76,6 +79,7 @@ impl Qcow2Anomaly {
             | Qcow2Anomaly::ExternalDataFile => Severity::Medium,
             Qcow2Anomaly::InternalSnapshots { .. }
             | Qcow2Anomaly::Snapshot { .. }
+            | Qcow2Anomaly::LegacyQcow1
             | Qcow2Anomaly::Dirty => Severity::Low,
         }
     }
@@ -92,6 +96,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::Corrupt => "QCOW2-CORRUPT",
             Qcow2Anomaly::ExternalDataFile => "QCOW2-EXTERNAL-DATA",
             Qcow2Anomaly::OrphanClusters { .. } => "QCOW2-ORPHAN-CLUSTERS",
+            Qcow2Anomaly::LegacyQcow1 => "QCOW2-QCOW1",
         }
     }
 
@@ -111,6 +116,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::Corrupt => "the corrupt bit is set — QEMU flagged the image as corrupt".to_string(),
             Qcow2Anomaly::ExternalDataFile => "image stores guest data in an external data file — the data is not self-contained".to_string(),
             Qcow2Anomaly::OrphanClusters { count, allocated } => format!("{count} of {allocated} allocated cluster(s) are reachable through L1/L2 yet have a host refcount of 0 — consistent with orphaned or deleted guest data left in the image"),
+            Qcow2Anomaly::LegacyQcow1 => "image uses the legacy QCOW1 (version 1) format — an obsolete container predating QCOW2's refcounts, snapshots, and feature bits".to_string(),
         }
     }
 }
@@ -183,6 +189,7 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
                     },
                 ]
             }
+            Qcow2Anomaly::LegacyQcow1 => vec![header("version", "1".to_string())],
         }
     }
 }
@@ -191,6 +198,9 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
 #[must_use]
 pub fn audit(info: &Qcow2Info) -> Vec<Qcow2Anomaly> {
     let mut out = Vec::new();
+    if info.version == 1 {
+        out.push(Qcow2Anomaly::LegacyQcow1);
+    }
     if info.has_backing_file {
         out.push(Qcow2Anomaly::BackingFile {
             name: info.backing_file.clone(),
