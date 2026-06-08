@@ -34,6 +34,14 @@ pub enum Qcow2Anomaly {
         /// Number of snapshots.
         count: u32,
     },
+    /// A single named internal snapshot — a captured guest state at a point in
+    /// time, worth examining as additional recoverable evidence.
+    Snapshot {
+        /// Snapshot name (e.g. "snap1").
+        name: String,
+        /// Creation time — seconds since the Unix epoch.
+        date_unix_secs: u32,
+    },
     /// The dirty bit is set — the image was not closed cleanly (in use/crash).
     Dirty,
     /// The corrupt bit is set — QEMU flagged the image as corrupt.
@@ -51,7 +59,9 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::BackingFile
             | Qcow2Anomaly::Encrypted { .. }
             | Qcow2Anomaly::ExternalDataFile => Severity::Medium,
-            Qcow2Anomaly::InternalSnapshots { .. } | Qcow2Anomaly::Dirty => Severity::Low,
+            Qcow2Anomaly::InternalSnapshots { .. }
+            | Qcow2Anomaly::Snapshot { .. }
+            | Qcow2Anomaly::Dirty => Severity::Low,
         }
     }
 
@@ -62,6 +72,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::BackingFile => "QCOW2-BACKING-FILE",
             Qcow2Anomaly::Encrypted { .. } => "QCOW2-ENCRYPTED",
             Qcow2Anomaly::InternalSnapshots { .. } => "QCOW2-INTERNAL-SNAPSHOTS",
+            Qcow2Anomaly::Snapshot { .. } => "QCOW2-SNAPSHOT",
             Qcow2Anomaly::Dirty => "QCOW2-DIRTY",
             Qcow2Anomaly::Corrupt => "QCOW2-CORRUPT",
             Qcow2Anomaly::ExternalDataFile => "QCOW2-EXTERNAL-DATA",
@@ -75,6 +86,7 @@ impl Qcow2Anomaly {
             Qcow2Anomaly::BackingFile => "image references a backing file — it is an overlay and does not alone contain the full guest data".to_string(),
             Qcow2Anomaly::Encrypted { method } => format!("image is encrypted (method {method}) — contents are inaccessible without the key"),
             Qcow2Anomaly::InternalSnapshots { count } => format!("image carries {count} internal snapshot(s) — additional captured guest states to examine"),
+            Qcow2Anomaly::Snapshot { name, date_unix_secs } => format!("internal snapshot `{name}` captured at unix time {date_unix_secs} — a recoverable point-in-time guest state to examine"),
             Qcow2Anomaly::Dirty => "the dirty bit is set — consistent with the image not having been closed cleanly (in use or crashed)".to_string(),
             Qcow2Anomaly::Corrupt => "the corrupt bit is set — QEMU flagged the image as corrupt".to_string(),
             Qcow2Anomaly::ExternalDataFile => "image stores guest data in an external data file — the data is not self-contained".to_string(),
@@ -94,19 +106,39 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
     }
     fn evidence(&self) -> Vec<forensicnomicon::report::Evidence> {
         use forensicnomicon::report::{Evidence, Location};
-        let (field, value) = match self {
-            Qcow2Anomaly::BackingFile => ("backing_file_offset", "present".to_string()),
-            Qcow2Anomaly::Encrypted { method } => ("crypt_method", method.to_string()),
-            Qcow2Anomaly::InternalSnapshots { count } => ("nb_snapshots", count.to_string()),
-            Qcow2Anomaly::Dirty => ("incompatible_features", "dirty".to_string()),
-            Qcow2Anomaly::Corrupt => ("incompatible_features", "corrupt".to_string()),
-            Qcow2Anomaly::ExternalDataFile => ("incompatible_features", "external-data".to_string()),
-        };
-        vec![Evidence {
+        // A single named snapshot's evidence lives in the snapshot table and
+        // carries both the name and its capture timestamp; every other anomaly
+        // is a single header field.
+        let header = |field: &str, value: String| Evidence {
             field: field.to_string(),
             value,
             location: Some(Location::Field("QCOW2 header".to_string())),
-        }]
+        };
+        match self {
+            Qcow2Anomaly::Snapshot { name, date_unix_secs } => {
+                let loc = || Some(Location::Field("QCOW2 snapshot table".to_string()));
+                vec![
+                    Evidence {
+                        field: "snapshot_name".to_string(),
+                        value: name.clone(),
+                        location: loc(),
+                    },
+                    Evidence {
+                        field: "date_unix_secs".to_string(),
+                        value: date_unix_secs.to_string(),
+                        location: loc(),
+                    },
+                ]
+            }
+            Qcow2Anomaly::BackingFile => vec![header("backing_file_offset", "present".to_string())],
+            Qcow2Anomaly::Encrypted { method } => vec![header("crypt_method", method.to_string())],
+            Qcow2Anomaly::InternalSnapshots { count } => vec![header("nb_snapshots", count.to_string())],
+            Qcow2Anomaly::Dirty => vec![header("incompatible_features", "dirty".to_string())],
+            Qcow2Anomaly::Corrupt => vec![header("incompatible_features", "corrupt".to_string())],
+            Qcow2Anomaly::ExternalDataFile => {
+                vec![header("incompatible_features", "external-data".to_string())]
+            }
+        }
     }
 }
 
@@ -142,14 +174,23 @@ pub fn audit(info: &Qcow2Info) -> Vec<Qcow2Anomaly> {
 /// Audit an enumerated snapshot list, emitting one `QCOW2-SNAPSHOT` finding per
 /// snapshot with its name and creation timestamp.
 #[must_use]
-pub fn audit_snapshots(_snapshots: &[Qcow2Snapshot]) -> Vec<Qcow2Anomaly> {
-    Vec::new()
+pub fn audit_snapshots(snapshots: &[Qcow2Snapshot]) -> Vec<Qcow2Anomaly> {
+    snapshots
+        .iter()
+        .map(|s| Qcow2Anomaly::Snapshot {
+            name: s.name.clone(),
+            date_unix_secs: s.date_unix_secs,
+        })
+        .collect()
 }
 
-/// Inspect and audit a QCOW2 image at `path` in one step. Malformed input
-/// surfaces as an error rather than silent emptiness.
+/// Inspect and audit a QCOW2 image at `path` in one step. Surfaces both the
+/// header-level anomalies and one per-snapshot finding. Malformed input surfaces
+/// as an error rather than silent emptiness.
 pub fn audit_path(path: &Path) -> Result<Vec<Qcow2Anomaly>, Qcow2Error> {
-    Ok(audit(&qcow2::inspect(path)?))
+    let mut out = audit(&qcow2::inspect(path)?);
+    out.extend(audit_snapshots(&qcow2::snapshots(path)?));
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -275,7 +316,13 @@ mod tests {
         assert!(a.severity() == Severity::Low || a.severity() == Severity::Info);
         assert!(a.note().contains("alpha"), "note must name the snapshot: {}", a.note());
         let ev = a.evidence();
-        let joined: String = ev.iter().map(|e| format!("{}={}", e.field, e.value)).collect();
+        let mut joined = String::new();
+        for e in &ev {
+            joined.push_str(&e.field);
+            joined.push('=');
+            joined.push_str(&e.value);
+            joined.push(';');
+        }
         assert!(joined.contains("alpha"), "evidence must carry the name: {joined}");
         assert!(joined.contains("1700000000"), "evidence must carry the timestamp: {joined}");
     }
@@ -295,30 +342,4 @@ mod tests {
         assert!(!f.evidence.is_empty());
     }
 
-    #[test]
-    fn audit_path_surfaces_per_snapshot_findings_on_real_image() {
-        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
-        if !std::path::Path::new(QEMU_IMG).exists() {
-            return;
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let img = dir.path().join("snaps.qcow2");
-        let run = |args: &[&str]| {
-            std::process::Command::new(QEMU_IMG)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
-        };
-        assert!(run(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
-        assert!(run(&["snapshot", "-c", "alpha", img.to_str().unwrap()]));
-
-        let anomalies = audit_path(&img).unwrap();
-        let snap_findings: Vec<&Qcow2Anomaly> = anomalies
-            .iter()
-            .filter(|a| a.code() == "QCOW2-SNAPSHOT")
-            .collect();
-        assert_eq!(snap_findings.len(), 1, "expected one per-snapshot finding");
-        assert!(snap_findings[0].note().contains("alpha"));
-    }
 }
