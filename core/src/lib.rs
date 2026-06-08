@@ -13,10 +13,12 @@ use std::path::Path;
 
 mod error;
 mod header;
+mod refcount;
 mod snapshots;
 
 pub use error::Qcow2Error;
 pub use header::Qcow2Info;
+pub use refcount::{refcount_report, Qcow2RefcountReport};
 pub use snapshots::{snapshots, Qcow2Snapshot};
 
 use header::Qcow2Header;

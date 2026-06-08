@@ -69,6 +69,32 @@ fn inspect_detects_internal_snapshot_on_real_image() {
 }
 
 #[test]
+fn refcount_report_on_real_clean_image_finds_no_orphans() {
+    if !have_qemu() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let raw = p(&dir, "src.raw");
+    let img = p(&dir, "data.qcow2");
+    // A 4 MiB image with real content so several data clusters are allocated.
+    let data: Vec<u8> = (0..(4usize << 20)).map(|i| (i ^ (i >> 7)) as u8).collect();
+    std::fs::write(&raw, &data).unwrap();
+    assert!(qemu(&[
+        "convert", "-O", "qcow2", raw.to_str().unwrap(), img.to_str().unwrap()
+    ]));
+
+    let r = qcow2::refcount_report(&img).unwrap();
+    // qemu defaults to 16-bit refcounts (order 4) and a non-empty refcount table.
+    assert_eq!(r.refcount_order, 4, "qemu default refcount_order is 4");
+    assert_ne!(r.refcount_table_offset, 0, "refcount table must be located");
+    assert!(r.allocated_clusters > 0, "image has allocated data clusters");
+    assert_eq!(
+        r.orphan_clusters, 0,
+        "a freshly-converted clean image must have no orphaned clusters"
+    );
+}
+
+#[test]
 fn inspect_extracts_backing_file_name_and_format_on_real_overlay() {
     if !have_qemu() {
         return;
