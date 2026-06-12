@@ -53,8 +53,8 @@ fn read_window(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
 /// Read-only QCOW2 container reader.
 ///
 /// Implements `Read + Seek` over the virtual sector stream.
-pub struct Qcow2Reader {
-    file: File,
+pub struct Qcow2Reader<T: Read + Seek> {
+    file: T,
     virtual_disk_size: u64,
     cluster_size: u64,
     l1_table: Vec<u64>,   // L1 entries (masked byte offsets of L2 tables)
@@ -63,17 +63,25 @@ pub struct Qcow2Reader {
     pos: u64,
 }
 
-impl Qcow2Reader {
-    /// Open a QCOW2 disk image (v2 or v3, uncompressed, no backing file).
+impl Qcow2Reader<File> {
     pub fn open(path: &Path) -> Result<Self, Qcow2Error> {
+        let file = File::open(path)?;
+        Self::from_reader(file)
+    }
+}
+
+impl<T> Qcow2Reader<T> 
+where
+    T: Read + Seek
+{
+    /// Open a QCOW2 disk image (v2 or v3, uncompressed, no backing file).
+    pub fn from_reader(mut reader: T) -> Result<Self, Qcow2Error> {
         // 8 MiB max L1 table — prevents OOM on crafted images.
         const MAX_L1_ENTRIES: u32 = 1 << 20;
 
-        let mut file = File::open(path)?;
-
         // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes) headers.
         let mut hdr_buf = [0u8; 104];
-        let hdr_read = file.read(&mut hdr_buf)?;
+        let hdr_read = reader.read(&mut hdr_buf)?;
         let hdr = Qcow2Header::parse(&hdr_buf[..hdr_read])?;
 
         let cluster_size = 1u64 << hdr.cluster_bits;
@@ -86,10 +94,10 @@ impl Qcow2Reader {
         if hdr.l1_size > MAX_L1_ENTRIES {
             return Err(Qcow2Error::L1TableTooLarge(hdr.l1_size));
         }
-        file.seek(SeekFrom::Start(hdr.l1_table_offset))?;
+        reader.seek(SeekFrom::Start(hdr.l1_table_offset))?;
         let l1_bytes = u64::from(hdr.l1_size) * 8;
         let mut l1_buf = vec![0u8; l1_bytes as usize];
-        file.read_exact(&mut l1_buf)?;
+        reader.read_exact(&mut l1_buf)?;
         let l1_table: Vec<u64> = l1_buf
             .chunks_exact(8)
             .map(|c| {
@@ -100,7 +108,7 @@ impl Qcow2Reader {
             .collect();
 
         Ok(Qcow2Reader {
-            file,
+            file: reader,
             virtual_disk_size: hdr.disk_size,
             cluster_size,
             l1_table,
@@ -204,7 +212,10 @@ enum ClusterRef {
     Compressed { file_offset: u64, compressed_bytes: usize },
 }
 
-impl Read for Qcow2Reader {
+impl<T> Read for Qcow2Reader<T>
+where
+    T: Read + Seek
+{
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.pos >= self.virtual_disk_size || buf.is_empty() {
             return Ok(0);
@@ -238,7 +249,10 @@ impl Read for Qcow2Reader {
     }
 }
 
-impl Seek for Qcow2Reader {
+impl<T> Seek for Qcow2Reader<T>
+where
+    T: Read + Seek
+{
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
             SeekFrom::Start(n) => n as i64,
@@ -376,7 +390,7 @@ mod tests {
     #[test]
     fn qcow2_reader_is_send() {
         fn assert_send<T: Send>() {}
-        assert_send::<Qcow2Reader>();
+        assert_send::<Qcow2Reader<File>>();
     }
 
     // ── Property tests: open() never panics on arbitrary input ────────────────
