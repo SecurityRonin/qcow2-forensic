@@ -1,15 +1,15 @@
 [package]
-name         = "qcow2-core"
-version      = "0.3.0"
-edition      = "2021"
-rust-version = "1.85"
-description  = "Pure-Rust read-only QCOW2 (QEMU Copy-On-Write v2/v3) disk image reader"
-license      = "MIT"
-authors      = ["Albert Hui"]
-keywords     = ["forensics", "qcow2", "disk-image", "qemu", "container"]
-categories   = ["parser-implementations", "filesystem"]
-repository   = "https://github.com/SecurityRonin/qcow2-forensic"
-homepage     = "https://github.com/SecurityRonin/qcow2-forensic"
+name          = "qcow2-core"
+version       = "0.3.0"
+edition       = { workspace = true }
+rust-version  = { workspace = true }
+description   = "Pure-Rust read-only QCOW2 (QEMU Copy-On-Write v2/v3) disk image reader"
+license       = { workspace = true }
+authors       = ["Albert Hui"]
+keywords      = ["forensics", "qcow2", "disk-image", "qemu", "container"]
+categories    = ["parser-implementations", "filesystem"]
+repository    = { workspace = true }
+homepage      = { workspace = true }
 documentation = "https://docs.rs/qcow2-core"
 
 # The crates.io name `qcow2` is taken (third-party), so we publish the reader as
@@ -25,12 +25,12 @@ name = "qcow2"
 test-helpers = []
 
 [dependencies]
-thiserror = "2"
-flate2    = "1"
+thiserror = { workspace = true }
+flate2    = { workspace = true }
 
 [dev-dependencies]
-tempfile  = "3"
-proptest  = "1"
+tempfile  = { workspace = true }
+proptest  = { workspace = true }
 
 [lints]
 workspace = true

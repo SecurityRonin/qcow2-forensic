@@ -2,6 +2,27 @@
 resolver = "2"
 members = ["core", "forensic"]
 
+# Single source of truth for fields shared identically by every member (DRY).
+# Per-member-divergent fields (version, authors, description, documentation,
+# keywords, categories, exclude) stay inline in each member.
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/SecurityRonin/qcow2-forensic"
+homepage = "https://github.com/SecurityRonin/qcow2-forensic"
+
+# Single source of truth for dependency versions (DRY): declare each once;
+# members write `dep.workspace = true`. The inter-crate `qcow2` version lives
+# here too, so a bump touches one line instead of every member.
+[workspace.dependencies]
+qcow2 = { path = "core", version = "0.3.0", package = "qcow2-core" }
+forensicnomicon = "0.3.1"
+thiserror = "2"
+flate2 = "1"
+tempfile = "3"
+proptest = "1"
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

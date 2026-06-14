@@ -1,23 +1,23 @@
 [package]
 name = "qcow2-forensic"
 version = "0.2.0"
-edition = "2021"
-rust-version = "1.85"
+edition = { workspace = true }
+rust-version = { workspace = true }
 description = "Forensic anomaly auditor for QCOW2 images — backing files, encryption, internal snapshots, dirty/corrupt feature bits as graded report::Finding, built on qcow2-core"
-license = "MIT"
+license = { workspace = true }
 authors = ["Albert Hui <albert@securityronin.com>"]
 keywords = ["forensics", "qcow2", "dfir", "disk-image", "qemu"]
 categories = ["parser-implementations", "filesystem"]
-repository = "https://github.com/SecurityRonin/qcow2-forensic"
-homepage = "https://github.com/SecurityRonin/qcow2-forensic"
+repository = { workspace = true }
+homepage = { workspace = true }
 documentation = "https://docs.rs/qcow2-forensic"
 
 [dependencies]
-qcow2 = { version = "0.3.0", path = "../core", package = "qcow2-core" }
-forensicnomicon = "0.3.1"
+qcow2 = { workspace = true }
+forensicnomicon = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
