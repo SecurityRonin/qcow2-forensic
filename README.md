@@ -1,7 +1,7 @@
 [![Crates.io (core)](https://img.shields.io/crates/v/qcow2-core.svg?label=qcow2-core)](https://crates.io/crates/qcow2-core)
 [![Crates.io (forensic)](https://img.shields.io/crates/v/qcow2-forensic.svg?label=qcow2-forensic)](https://crates.io/crates/qcow2-forensic)
 [![Docs.rs](https://img.shields.io/docsrs/qcow2-core?label=docs.rs)](https://docs.rs/qcow2-core)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/SecurityRonin/qcow2-forensic/actions/workflows/ci.yml/badge.svg)](https://github.com/SecurityRonin/qcow2-forensic/actions/workflows/ci.yml)
 [![Sponsor](https://img.shields.io/badge/sponsor-h4x0r-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/h4x0r)
 
