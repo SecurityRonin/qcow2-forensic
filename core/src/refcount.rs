@@ -340,7 +340,10 @@ mod tests {
         let f = write_tmp(&build(0));
         let r = refcount_report(f.path()).unwrap();
         assert_eq!(r.allocated_clusters, 1);
-        assert_eq!(r.orphan_clusters, 1, "refcount-0 allocated cluster is orphaned");
+        assert_eq!(
+            r.orphan_clusters, 1,
+            "refcount-0 allocated cluster is orphaned"
+        );
     }
 
     #[test]
@@ -359,7 +362,10 @@ mod tests {
         let mut img = build(1);
         img[0] = 0;
         let f = write_tmp(&img);
-        assert!(matches!(refcount_report(f.path()), Err(Qcow2Error::BadMagic)));
+        assert!(matches!(
+            refcount_report(f.path()),
+            Err(Qcow2Error::BadMagic)
+        ));
     }
 
     #[test]
@@ -439,5 +445,35 @@ mod tests {
     #[test]
     fn open_nonexistent_is_io_error() {
         assert!(refcount_report(Path::new("/tmp/no_such_qcow2_rc.qcow2")).is_err());
+    }
+
+    #[test]
+    fn refcount_table_read_failure_surfaces_io_error_not_empty() {
+        // The refcount table is the bootstrap/root of the refcount-block tree
+        // (QCOW2 spec §5): every refcount lookup depends on it. Point it BEYOND
+        // the end of the file so the table read fails. A genuine I/O failure on
+        // this prerequisite must surface as Err — never be swallowed into an
+        // empty table that reports a clean (zero-orphan) image.
+        let mut img = build(1);
+        let past_eof = (img.len() as u64) + CS * 64;
+        img[48..56].copy_from_slice(&past_eof.to_be_bytes()); // refcount_table_offset
+        let f = write_tmp(&img);
+        let res = refcount_report(f.path());
+        assert!(
+            matches!(res, Err(Qcow2Error::Io(_))),
+            "refcount-table read I/O failure must error, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn empty_refcount_table_still_reports_ok() {
+        // A legitimately empty/zero refcount table (offset 0) is NOT an I/O
+        // failure — it must stay Ok(empty), distinct from the error case above.
+        let mut img = build(1);
+        img[48..56].copy_from_slice(&0u64.to_be_bytes()); // refcount_table_offset = 0
+        img[56..60].copy_from_slice(&0u32.to_be_bytes()); // refcount_table_clusters = 0
+        let f = write_tmp(&img);
+        let r = refcount_report(f.path()).expect("empty refcount table is a valid Ok case");
+        assert_eq!(r.refcount_table_offset, 0);
     }
 }
