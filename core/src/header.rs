@@ -12,7 +12,8 @@ pub const MIN_HEADER_SIZE: usize = 72; // v2 header length
 const INCOMPAT_EXTERNAL_DATA: u64 = 1 << 2;
 const INCOMPAT_COMPRESSION_TYPE: u64 = 1 << 3;
 const INCOMPAT_EXTENDED_L2: u64 = 1 << 4;
-const INCOMPAT_UNSUPPORTED: u64 = INCOMPAT_EXTERNAL_DATA | INCOMPAT_COMPRESSION_TYPE | INCOMPAT_EXTENDED_L2;
+const INCOMPAT_UNSUPPORTED: u64 =
+    INCOMPAT_EXTERNAL_DATA | INCOMPAT_COMPRESSION_TYPE | INCOMPAT_EXTENDED_L2;
 
 /// Read a big-endian `u32` at `off`. Never panics: out-of-range reads yield 0
 /// (callers bounds-check the header length up front).
@@ -35,9 +36,9 @@ fn be_u64(data: &[u8], off: usize) -> u64 {
 
 /// Parsed QCOW2 header fields needed for cluster navigation.
 pub struct Qcow2Header {
-    pub cluster_bits: u32,   // cluster_size = 1 << cluster_bits
-    pub disk_size: u64,      // virtual disk size in bytes
-    pub l1_size: u32,        // number of L1 table entries
+    pub cluster_bits: u32, // cluster_size = 1 << cluster_bits
+    pub disk_size: u64,    // virtual disk size in bytes
+    pub l1_size: u32,      // number of L1 table entries
     pub l1_table_offset: u64,
 }
 
@@ -87,7 +88,12 @@ impl Qcow2Header {
             }
         }
 
-        Ok(Qcow2Header { cluster_bits, disk_size, l1_size, l1_table_offset })
+        Ok(Qcow2Header {
+            cluster_bits,
+            disk_size,
+            l1_size,
+            l1_table_offset,
+        })
     }
 }
 
@@ -285,7 +291,11 @@ mod tests {
             d[100..104].copy_from_slice(&header_len.to_be_bytes());
         }
         // Extensions begin at header_len (v3) or 72 (v2).
-        let ext_start = if version == 3 { header_len as usize } else { MIN_HEADER_SIZE };
+        let ext_start = if version == 3 {
+            header_len as usize
+        } else {
+            MIN_HEADER_SIZE
+        };
         d[ext_start..ext_start + extensions.len()].copy_from_slice(extensions);
         if backing_off != 0 {
             let s = backing_off as usize;

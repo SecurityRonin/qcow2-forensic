@@ -57,8 +57,8 @@ pub struct Qcow2Reader {
     file: File,
     virtual_disk_size: u64,
     cluster_size: u64,
-    l1_table: Vec<u64>,   // L1 entries (masked byte offsets of L2 tables)
-    l2_bits: u32,         // log2(entries per L2 table)
+    l1_table: Vec<u64>, // L1 entries (masked byte offsets of L2 tables)
+    l2_bits: u32,       // log2(entries per L2 table)
     l2_mask: u64,
     pos: u64,
 }
@@ -148,7 +148,10 @@ impl Qcow2Reader {
             let file_offset = l2_entry & ((1u64 << split) - 1);
             let nb_sectors = ((l2_entry >> split) & count_mask) + 1;
             let compressed_bytes = (nb_sectors * 512) as usize;
-            return Ok(ClusterRef::Compressed { file_offset, compressed_bytes });
+            return Ok(ClusterRef::Compressed {
+                file_offset,
+                compressed_bytes,
+            });
         }
 
         // QCOW_OFLAG_ZERO (bit 0): guest must see zeros regardless of cluster offset.
@@ -171,7 +174,11 @@ impl Qcow2Reader {
     /// `compressed_bytes` is an upper bound (`nb_sectors` × 512); the actual
     /// compressed stream may be shorter, and near the end of the file the read
     /// may hit EOF before reaching `compressed_bytes`. Both are normal.
-    fn decompress_cluster(&mut self, file_offset: u64, compressed_bytes: usize) -> io::Result<Vec<u8>> {
+    fn decompress_cluster(
+        &mut self,
+        file_offset: u64,
+        compressed_bytes: usize,
+    ) -> io::Result<Vec<u8>> {
         use flate2::read::DeflateDecoder;
 
         self.file.seek(SeekFrom::Start(file_offset))?;
@@ -201,7 +208,10 @@ enum ClusterRef {
     Unallocated,
     ZeroCluster,
     Normal(u64),
-    Compressed { file_offset: u64, compressed_bytes: usize },
+    Compressed {
+        file_offset: u64,
+        compressed_bytes: usize,
+    },
 }
 
 impl Read for Qcow2Reader {
@@ -221,7 +231,10 @@ impl Read for Qcow2Reader {
                 self.file.seek(SeekFrom::Start(file_off))?;
                 self.file.read(&mut buf[..to_read])?
             }
-            ClusterRef::Compressed { file_offset, compressed_bytes } => {
+            ClusterRef::Compressed {
+                file_offset,
+                compressed_bytes,
+            } => {
                 let decompressed = self.decompress_cluster(file_offset, compressed_bytes)?;
                 let src = &decompressed[offset_in_cluster..offset_in_cluster + to_read];
                 buf[..to_read].copy_from_slice(src);
@@ -283,14 +296,14 @@ mod tests {
     fn qcow2_header_bytes(cluster_bits: u32) -> Vec<u8> {
         let mut h = vec![0u8; 72];
         h[0..4].copy_from_slice(&0x5146_49fb_u32.to_be_bytes()); // magic
-        h[4..8].copy_from_slice(&2u32.to_be_bytes());             // version 2
-        // bytes 8..16: backing_file_offset = 0
-        // bytes 16..20: backing_file_size = 0
-        h[20..24].copy_from_slice(&cluster_bits.to_be_bytes());   // cluster_bits
-        h[24..32].copy_from_slice(&512u64.to_be_bytes());         // disk_size
-        // bytes 32..36: encryption = 0
-        h[36..40].copy_from_slice(&0u32.to_be_bytes());           // l1_size = 0
-        h[40..48].copy_from_slice(&0u64.to_be_bytes());           // l1_table_offset
+        h[4..8].copy_from_slice(&2u32.to_be_bytes()); // version 2
+                                                      // bytes 8..16: backing_file_offset = 0
+                                                      // bytes 16..20: backing_file_size = 0
+        h[20..24].copy_from_slice(&cluster_bits.to_be_bytes()); // cluster_bits
+        h[24..32].copy_from_slice(&512u64.to_be_bytes()); // disk_size
+                                                          // bytes 32..36: encryption = 0
+        h[36..40].copy_from_slice(&0u32.to_be_bytes()); // l1_size = 0
+        h[40..48].copy_from_slice(&0u64.to_be_bytes()); // l1_table_offset
         h
     }
 
@@ -416,7 +429,7 @@ mod tests {
 
         // Build test_qcow2 but with L2[0] = 1 (ZERO_PLAIN) instead of DATA_OFFSET.
         let img = test_qcow2(&[0xABu8; 512]); // produces a valid image
-        // Patch L2[0] = 1 at offset 1536 (L2_OFFSET from testutil).
+                                              // Patch L2[0] = 1 at offset 1536 (L2_OFFSET from testutil).
         let mut patched = img.clone();
         let l2_offset = 1536usize;
         patched[l2_offset..l2_offset + 8].copy_from_slice(&1u64.to_be_bytes());
@@ -428,8 +441,7 @@ mod tests {
         reader.seek(SeekFrom::Start(0)).unwrap();
         reader.read_exact(&mut buf).expect("read");
         assert_eq!(
-            buf,
-            [0u8; 512],
+            buf, [0u8; 512],
             "ZERO_PLAIN cluster (L2 entry=1) must read as all zeros"
         );
     }
@@ -453,9 +465,13 @@ mod tests {
 
         let qcow2_path = tmp.path().join("test.qcow2");
         let status = std::process::Command::new(QEMU_IMG)
-            .args(["convert", "-O", "qcow2",
-                   raw_path.to_str().unwrap(),
-                   qcow2_path.to_str().unwrap()])
+            .args([
+                "convert",
+                "-O",
+                "qcow2",
+                raw_path.to_str().unwrap(),
+                qcow2_path.to_str().unwrap(),
+            ])
             .status()
             .expect("spawn qemu-img");
         assert!(status.success(), "qemu-img convert failed");
@@ -486,38 +502,47 @@ mod tests {
         if !Path::new(QEMU_IMG).exists() {
             return;
         }
-        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/data/cirros-0.6.3-x86_64-disk.img");
+        let corpus =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cirros-0.6.3-x86_64-disk.img");
         if !corpus.exists() {
             return; // skip if corpus not present
         }
         let tmp = tempfile::tempdir().expect("tempdir");
         let raw_path = tmp.path().join("cirros.raw");
         let ok = std::process::Command::new(QEMU_IMG)
-            .args(["convert", "-O", "raw",
-                   corpus.to_str().unwrap(),
-                   raw_path.to_str().unwrap()])
-            .status().expect("spawn qemu-img").success();
+            .args([
+                "convert",
+                "-O",
+                "raw",
+                corpus.to_str().unwrap(),
+                raw_path.to_str().unwrap(),
+            ])
+            .status()
+            .expect("spawn qemu-img")
+            .success();
         assert!(ok, "qemu-img convert failed");
         let ref_data = std::fs::read(&raw_path).expect("read raw");
 
         let mut reader = Qcow2Reader::open(&corpus).expect("open corpus");
-        assert_eq!(reader.virtual_disk_size(), ref_data.len() as u64,
-            "virtual_disk_size must match reference raw length");
+        assert_eq!(
+            reader.virtual_disk_size(),
+            ref_data.len() as u64,
+            "virtual_disk_size must match reference raw length"
+        );
 
         // CirrOS is 112 MiB virtual. Sample across the full range:
         // MBR, partition table, multiple cluster boundaries, mid-image, near-end.
         let vsize = ref_data.len();
         let cluster = 65536usize;
         let samples = [
-            0usize,               // MBR / boot sector
-            446,                  // partition table entries
-            510,                  // MBR boot signature (0x55 0xAA)
-            cluster,              // second cluster
-            cluster * 10,         // tenth cluster
-            vsize / 2,            // mid-image
-            vsize / 2 + cluster,  // mid-image + one cluster
-            vsize - 512,          // last sector
+            0usize,              // MBR / boot sector
+            446,                 // partition table entries
+            510,                 // MBR boot signature (0x55 0xAA)
+            cluster,             // second cluster
+            cluster * 10,        // tenth cluster
+            vsize / 2,           // mid-image
+            vsize / 2 + cluster, // mid-image + one cluster
+            vsize - 512,         // last sector
         ];
         for &offset in &samples {
             let len = 512.min(vsize - offset);
@@ -525,7 +550,8 @@ mod tests {
             reader.seek(SeekFrom::Start(offset as u64)).expect("seek");
             reader.read_exact(&mut buf).expect("read");
             assert_eq!(
-                buf, ref_data[offset..offset + len],
+                buf,
+                ref_data[offset..offset + len],
                 "byte mismatch at offset {offset:#x}",
             );
         }

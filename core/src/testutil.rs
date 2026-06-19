@@ -26,13 +26,13 @@ pub fn test_qcow2(sector_data: &[u8]) -> Vec<u8> {
     // ── Header (padded to one cluster) ────────────────────────────────────────
     let mut hdr = vec![0u8; CLUSTER_SIZE];
     hdr[0..4].copy_from_slice(&MAGIC.to_be_bytes());
-    hdr[4..8].copy_from_slice(&2u32.to_be_bytes());                               // version = 2
+    hdr[4..8].copy_from_slice(&2u32.to_be_bytes()); // version = 2
     hdr[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
-    hdr[24..32].copy_from_slice(&(CLUSTER_SIZE as u64).to_be_bytes());            // disk_size
-    hdr[36..40].copy_from_slice(&1u32.to_be_bytes());                             // l1_size = 1
+    hdr[24..32].copy_from_slice(&(CLUSTER_SIZE as u64).to_be_bytes()); // disk_size
+    hdr[36..40].copy_from_slice(&1u32.to_be_bytes()); // l1_size = 1
     hdr[40..48].copy_from_slice(&L1_OFFSET.to_be_bytes());
     hdr[48..56].copy_from_slice(&REFCOUNT_OFFSET.to_be_bytes());
-    hdr[56..60].copy_from_slice(&1u32.to_be_bytes());                             // refcount_table_clusters = 1
+    hdr[56..60].copy_from_slice(&1u32.to_be_bytes()); // refcount_table_clusters = 1
 
     // ── L1 table ──────────────────────────────────────────────────────────────
     let mut l1 = vec![0u8; CLUSTER_SIZE];

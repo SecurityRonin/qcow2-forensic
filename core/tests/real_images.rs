@@ -17,8 +17,7 @@ fn qemu(args: &[&str]) -> bool {
     Command::new(QEMU_IMG)
         .args(args)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 fn p(d: &tempfile::TempDir, name: &str) -> PathBuf {
@@ -33,10 +32,21 @@ fn inspect_detects_backing_file_on_real_overlay() {
     let dir = tempfile::tempdir().unwrap();
     let base = p(&dir, "base.qcow2");
     let overlay = p(&dir, "overlay.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", base.to_str().unwrap(), "10M"]));
     assert!(qemu(&[
-        "create", "-f", "qcow2", "-b",
-        base.to_str().unwrap(), "-F", "qcow2",
+        "create",
+        "-f",
+        "qcow2",
+        base.to_str().unwrap(),
+        "10M"
+    ]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        "-b",
+        base.to_str().unwrap(),
+        "-F",
+        "qcow2",
         overlay.to_str().unwrap()
     ]));
 
@@ -57,7 +67,13 @@ fn inspect_detects_internal_snapshot_on_real_image() {
     }
     let dir = tempfile::tempdir().unwrap();
     let img = p(&dir, "snap.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        img.to_str().unwrap(),
+        "10M"
+    ]));
     assert!(qemu(&["snapshot", "-c", "snap1", img.to_str().unwrap()]));
 
     let info = qcow2::inspect(&img).unwrap();
@@ -80,14 +96,21 @@ fn refcount_report_on_real_clean_image_finds_no_orphans() {
     let data: Vec<u8> = (0..(4usize << 20)).map(|i| (i ^ (i >> 7)) as u8).collect();
     std::fs::write(&raw, &data).unwrap();
     assert!(qemu(&[
-        "convert", "-O", "qcow2", raw.to_str().unwrap(), img.to_str().unwrap()
+        "convert",
+        "-O",
+        "qcow2",
+        raw.to_str().unwrap(),
+        img.to_str().unwrap()
     ]));
 
     let r = qcow2::refcount_report(&img).unwrap();
     // qemu defaults to 16-bit refcounts (order 4) and a non-empty refcount table.
     assert_eq!(r.refcount_order, 4, "qemu default refcount_order is 4");
     assert_ne!(r.refcount_table_offset, 0, "refcount table must be located");
-    assert!(r.allocated_clusters > 0, "image has allocated data clusters");
+    assert!(
+        r.allocated_clusters > 0,
+        "image has allocated data clusters"
+    );
     assert_eq!(
         r.orphan_clusters, 0,
         "a freshly-converted clean image must have no orphaned clusters"
@@ -106,7 +129,10 @@ fn inspect_reports_qcow1_version_distinctly_on_real_image() {
         return;
     }
     let info = qcow2::inspect(&img).unwrap();
-    assert_eq!(info.version, 1, "a real qcow (v1) image must report version 1");
+    assert_eq!(
+        info.version, 1,
+        "a real qcow (v1) image must report version 1"
+    );
 }
 
 #[test]
@@ -117,15 +143,28 @@ fn inspect_extracts_backing_file_name_and_format_on_real_overlay() {
     let dir = tempfile::tempdir().unwrap();
     let base = p(&dir, "base.qcow2");
     let overlay = p(&dir, "overlay.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", base.to_str().unwrap(), "10M"]));
     assert!(qemu(&[
-        "create", "-f", "qcow2", "-b",
-        base.to_str().unwrap(), "-F", "qcow2",
+        "create",
+        "-f",
+        "qcow2",
+        base.to_str().unwrap(),
+        "10M"
+    ]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        "-b",
+        base.to_str().unwrap(),
+        "-F",
+        "qcow2",
         overlay.to_str().unwrap()
     ]));
 
     let info = qcow2::inspect(&overlay).unwrap();
-    let backing = info.backing_file.expect("overlay must expose a backing filename");
+    let backing = info
+        .backing_file
+        .expect("overlay must expose a backing filename");
     assert!(
         backing.contains("base.qcow2"),
         "backing filename should reference base.qcow2, got {backing:?}"
@@ -149,18 +188,34 @@ fn snapshots_enumerates_named_snapshot_on_real_image() {
     }
     let dir = tempfile::tempdir().unwrap();
     let img = p(&dir, "snaps.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        img.to_str().unwrap(),
+        "10M"
+    ]));
     assert!(qemu(&["snapshot", "-c", "alpha", img.to_str().unwrap()]));
     assert!(qemu(&["snapshot", "-c", "beta", img.to_str().unwrap()]));
 
     let snaps = qcow2::snapshots(&img).unwrap();
     let names: Vec<&str> = snaps.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"alpha"), "expected snapshot 'alpha', got {names:?}");
-    assert!(names.contains(&"beta"), "expected snapshot 'beta', got {names:?}");
+    assert!(
+        names.contains(&"alpha"),
+        "expected snapshot 'alpha', got {names:?}"
+    );
+    assert!(
+        names.contains(&"beta"),
+        "expected snapshot 'beta', got {names:?}"
+    );
     // Every real snapshot carries a non-empty id and a plausible recent timestamp.
     for s in &snaps {
         assert!(!s.id.is_empty(), "snapshot id must not be empty");
-        assert!(s.date_unix_secs > 1_500_000_000, "snapshot date looks wrong: {}", s.date_unix_secs);
+        assert!(
+            s.date_unix_secs > 1_500_000_000,
+            "snapshot date looks wrong: {}",
+            s.date_unix_secs
+        );
     }
 }
 
@@ -173,10 +228,15 @@ fn inspect_detects_encryption_on_real_luks_image() {
     let img = p(&dir, "enc.qcow2");
     // Some qemu builds lack LUKS support — skip if creation fails.
     if !qemu(&[
-        "create", "-f", "qcow2",
-        "--object", "secret,id=sec,data=hunter2",
-        "-o", "encrypt.format=luks,encrypt.key-secret=sec",
-        img.to_str().unwrap(), "10M",
+        "create",
+        "-f",
+        "qcow2",
+        "--object",
+        "secret,id=sec,data=hunter2",
+        "-o",
+        "encrypt.format=luks,encrypt.key-secret=sec",
+        img.to_str().unwrap(),
+        "10M",
     ]) {
         return;
     }
@@ -189,14 +249,17 @@ fn inspect_detects_encryption_on_real_luks_image() {
 
 #[test]
 fn inspect_reads_real_cirros_corpus_as_clean() {
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data/cirros-0.6.3-x86_64-disk.img");
+    let corpus =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cirros-0.6.3-x86_64-disk.img");
     if !corpus.exists() {
         return;
     }
     let info = qcow2::inspect(&corpus).unwrap();
     assert!(info.version == 2 || info.version == 3, "real qcow2 version");
-    assert!(!info.has_backing_file, "standalone cirros image — no backing file");
+    assert!(
+        !info.has_backing_file,
+        "standalone cirros image — no backing file"
+    );
     assert_eq!(info.encryption_method, 0, "cirros is not encrypted");
     assert!(info.virtual_disk_size > 0);
 }

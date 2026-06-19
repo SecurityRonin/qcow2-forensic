@@ -142,7 +142,10 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
             location: Some(Location::Field("QCOW2 header".to_string())),
         };
         match self {
-            Qcow2Anomaly::Snapshot { name, date_unix_secs } => {
+            Qcow2Anomaly::Snapshot {
+                name,
+                date_unix_secs,
+            } => {
                 let loc = || Some(Location::Field("QCOW2 snapshot table".to_string()));
                 vec![
                     Evidence {
@@ -168,7 +171,9 @@ impl forensicnomicon::report::Observation for Qcow2Anomaly {
                 ev
             }
             Qcow2Anomaly::Encrypted { method } => vec![header("crypt_method", method.to_string())],
-            Qcow2Anomaly::InternalSnapshots { count } => vec![header("nb_snapshots", count.to_string())],
+            Qcow2Anomaly::InternalSnapshots { count } => {
+                vec![header("nb_snapshots", count.to_string())]
+            }
             Qcow2Anomaly::Dirty => vec![header("incompatible_features", "dirty".to_string())],
             Qcow2Anomaly::Corrupt => vec![header("incompatible_features", "corrupt".to_string())],
             Qcow2Anomaly::ExternalDataFile => {
@@ -339,9 +344,16 @@ mod tests {
         i.backing_file = Some("base.qcow2".to_string());
         i.backing_format = None; // name known, format not recorded
         let out = audit(&i);
-        let bf = out.iter().find(|a| a.code() == "QCOW2-BACKING-FILE").unwrap();
+        let bf = out
+            .iter()
+            .find(|a| a.code() == "QCOW2-BACKING-FILE")
+            .unwrap();
         assert!(bf.note().contains("base.qcow2"));
-        assert!(!bf.note().contains("format "), "no format clause when absent: {}", bf.note());
+        assert!(
+            !bf.note().contains("format "),
+            "no format clause when absent: {}",
+            bf.note()
+        );
     }
 
     #[test]
@@ -415,7 +427,11 @@ mod tests {
         let a = audit_orphans(&report(100, 7)).expect("orphan finding");
         assert_eq!(a.code(), "QCOW2-ORPHAN-CLUSTERS");
         assert_eq!(a.severity(), Severity::Medium);
-        assert!(a.note().contains('7'), "note must carry the count: {}", a.note());
+        assert!(
+            a.note().contains('7'),
+            "note must carry the count: {}",
+            a.note()
+        );
         let mut joined = String::new();
         for e in &a.evidence() {
             joined.push_str(&e.field);
@@ -423,7 +439,10 @@ mod tests {
             joined.push_str(&e.value);
             joined.push(';');
         }
-        assert!(joined.contains('7'), "evidence must carry the count: {joined}");
+        assert!(
+            joined.contains('7'),
+            "evidence must carry the count: {joined}"
+        );
     }
 
     #[test]
@@ -502,7 +521,11 @@ mod tests {
         let a = &out[0];
         assert_eq!(a.code(), "QCOW2-SNAPSHOT");
         assert!(a.severity() == Severity::Low || a.severity() == Severity::Info);
-        assert!(a.note().contains("alpha"), "note must name the snapshot: {}", a.note());
+        assert!(
+            a.note().contains("alpha"),
+            "note must name the snapshot: {}",
+            a.note()
+        );
         let ev = a.evidence();
         let mut joined = String::new();
         for e in &ev {
@@ -511,8 +534,14 @@ mod tests {
             joined.push_str(&e.value);
             joined.push(';');
         }
-        assert!(joined.contains("alpha"), "evidence must carry the name: {joined}");
-        assert!(joined.contains("1700000000"), "evidence must carry the timestamp: {joined}");
+        assert!(
+            joined.contains("alpha"),
+            "evidence must carry the name: {joined}"
+        );
+        assert!(
+            joined.contains("1700000000"),
+            "evidence must carry the timestamp: {joined}"
+        );
     }
 
     #[test]
@@ -529,5 +558,4 @@ mod tests {
         assert!(!f.note.is_empty());
         assert!(!f.evidence.is_empty());
     }
-
 }

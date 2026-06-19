@@ -19,8 +19,7 @@ fn qemu(args: &[&str]) -> bool {
     Command::new(QEMU_IMG)
         .args(args)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 #[test]
@@ -31,10 +30,21 @@ fn audit_path_names_the_backing_file_on_real_overlay() {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path().join("base.qcow2");
     let overlay = dir.path().join("overlay.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", base.to_str().unwrap(), "10M"]));
     assert!(qemu(&[
-        "create", "-f", "qcow2", "-b",
-        base.to_str().unwrap(), "-F", "qcow2",
+        "create",
+        "-f",
+        "qcow2",
+        base.to_str().unwrap(),
+        "10M"
+    ]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        "-b",
+        base.to_str().unwrap(),
+        "-F",
+        "qcow2",
         overlay.to_str().unwrap()
     ]));
 
@@ -60,7 +70,13 @@ fn audit_path_surfaces_per_snapshot_findings_on_real_image() {
     }
     let dir = tempfile::tempdir().unwrap();
     let img = dir.path().join("snaps.qcow2");
-    assert!(qemu(&["create", "-f", "qcow2", img.to_str().unwrap(), "10M"]));
+    assert!(qemu(&[
+        "create",
+        "-f",
+        "qcow2",
+        img.to_str().unwrap(),
+        "10M"
+    ]));
     assert!(qemu(&["snapshot", "-c", "alpha", img.to_str().unwrap()]));
     assert!(qemu(&["snapshot", "-c", "beta", img.to_str().unwrap()]));
 
