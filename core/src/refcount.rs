@@ -56,30 +56,37 @@ fn be_u64(data: &[u8], off: usize) -> u64 {
 }
 
 /// Read `n` big-endian u64 values starting at `offset`. Returns an empty vec on
-/// any I/O failure (caller treats a missing table as "no allocations").
+/// any I/O failure (caller treats a missing per-artifact table — e.g. one L2
+/// table out of many — as "no allocations"). For a *bootstrap* table whose
+/// failure must not be silently inverted into an empty result, use
+/// [`read_u64_table_checked`] instead.
 fn read_u64_table(file: &mut File, offset: u64, n: usize) -> Vec<u64> {
+    read_u64_table_checked(file, offset, n).unwrap_or_default()
+}
+
+/// Read `n` big-endian u64 values starting at `offset`, surfacing seek/read I/O
+/// failures as [`Qcow2Error::Io`].
+///
+/// A genuinely empty table (`n == 0 || offset == 0`) is a legitimate empty case
+/// and returns `Ok(Vec::new())`. This is the fail-loud reader for *bootstrap*
+/// structures (the refcount table is the root of the refcount-block tree per
+/// QCOW2 spec §5): an I/O error on such a prerequisite must not be swallowed
+/// into an empty table indistinguishable from a clean image.
+fn read_u64_table_checked(file: &mut File, offset: u64, n: usize) -> Result<Vec<u64>> {
     if n == 0 || offset == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    if file.seek(SeekFrom::Start(offset)).is_err() {
-        return Vec::new();
-    }
+    file.seek(SeekFrom::Start(offset))?;
     let mut buf = vec![0u8; n * 8];
-    let mut filled = 0;
-    while filled < buf.len() {
-        match file.read(&mut buf[filled..]) {
-            Ok(0) | Err(_) => break,
-            Ok(k) => filled += k,
-        }
-    }
-    buf[..filled]
+    file.read_exact(&mut buf)?;
+    Ok(buf
         .chunks_exact(8)
         .map(|c| {
             let mut a = [0u8; 8];
             a.copy_from_slice(c);
             u64::from_be_bytes(a)
         })
-        .collect()
+        .collect())
 }
 
 /// Look up the host refcount for cluster index `cluster_idx`.
@@ -211,7 +218,10 @@ pub fn refcount_report(path: &Path) -> Result<Qcow2RefcountReport> {
     // Load the refcount table (an array of u64 block pointers).
     let rt_entries = (u64::from(refcount_table_clusters) * cluster_size / 8) as usize;
     let rt_entries = rt_entries.min(MAX_L1_ENTRIES);
-    let refcount_table = read_u64_table(&mut file, refcount_table_offset, rt_entries);
+    // Fail loud on a bootstrap I/O failure: the refcount table is the root of
+    // the refcount-block tree, so a swallowed read here would be indistinguishable
+    // from a legitimately empty table reporting a clean (zero-orphan) image.
+    let refcount_table = read_u64_table_checked(&mut file, refcount_table_offset, rt_entries)?;
 
     // Load the active L1 table.
     let l1_entries = l1_size.min(MAX_L1_ENTRIES);
