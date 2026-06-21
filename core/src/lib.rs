@@ -502,8 +502,8 @@ mod tests {
         if !Path::new(QEMU_IMG).exists() {
             return;
         }
-        let corpus =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cirros-0.6.3-x86_64-disk.img");
+        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/data/cirros-0.6.3-x86_64-disk.img");
         if !corpus.exists() {
             return; // skip if corpus not present
         }

@@ -12,6 +12,10 @@ repository = { workspace = true }
 homepage = { workspace = true }
 documentation = "https://docs.rs/qcow2-forensic"
 
+# Keep the published package small: integration tests + fuzz/corpus/docs are for
+# local/CI validation only.
+exclude = ["/tests", "/fuzz", "/corpus", "/docs"]
+
 [dependencies]
 qcow2 = { workspace = true }
 forensicnomicon = { workspace = true }

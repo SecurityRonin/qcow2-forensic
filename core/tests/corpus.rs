@@ -6,7 +6,7 @@ fn corpus_dir() -> Option<PathBuf> {
     std::env::var("CORPUS_DIR").ok().map(PathBuf::from)
 }
 
-const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data");
+const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/data");
 
 #[test]
 fn corpus_sparse_qcow2_opens_and_has_nonzero_size() {

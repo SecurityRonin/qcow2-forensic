@@ -16,7 +16,7 @@ documentation = "https://docs.rs/qcow2-core"
 # `qcow2-core` while keeping the ergonomic import path `use qcow2::…`.
 # Keep the published package small: the real-image corpus + fuzz seeds are for
 # local/CI validation only (the gated tests skip when absent).
-exclude = ["tests/data/", "/fuzz", "/corpus", "/docs"]
+exclude = ["/tests", "/fuzz", "/corpus", "/docs"]
 
 [lib]
 name = "qcow2"
