@@ -79,7 +79,7 @@ Each is an *observation* ("consistent with …") on the shared [`forensicnomicon
 
 ## Trust, but verify
 
-Read-only and panic-free by construction: `#![forbid(unsafe_code)]`, no `unwrap`/`expect`/unchecked indexing in production parsers, every length/offset bounds-checked, and `cargo fuzz` targets (`open`/`read`/`inspect`/`forensic`) that must never panic on crafted bytes. Decoding is **differentially validated against `qemu-img convert`** and a real CirrOS cloud image; `inspect()` is validated against real qemu-img-produced backing-file, snapshot, and LUKS images. See [`docs/validation.md`](docs/validation.md).
+Read-only and panic-free by construction: `#![forbid(unsafe_code)]`, no `unwrap`/`expect`/unchecked indexing in production parsers, every length/offset bounds-checked, and `cargo fuzz` targets (`open`/`read`/`inspect`/`forensic`) that must never panic on crafted bytes. Decoding is **differentially validated against `qemu-img convert`** (the reference QEMU implementation) on the real CirrOS 0.6.3 cloud image; `inspect()`, `snapshots()`, `refcount_report()`, and `audit_path()` are validated against real qemu-img-produced backing-file, snapshot, encryption, and v1 images. The zlib cluster decode uses the vetted third-party `flate2` codec. See the [validation page](https://securityronin.github.io/qcow2-forensic/validation/) for the per-capability oracle/corpus evidence.
 
 ---
 
