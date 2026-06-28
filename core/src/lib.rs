@@ -62,7 +62,7 @@ fn read_window(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
 ///
 /// Implements `Read + Seek` over the virtual sector stream.
 pub struct Qcow2Reader {
-    file: File,
+    backing: Box<dyn ReadSeekSend>,
     virtual_disk_size: u64,
     cluster_size: u64,
     l1_table: Vec<u64>, // L1 entries (masked byte offsets of L2 tables)
@@ -74,14 +74,27 @@ pub struct Qcow2Reader {
 impl Qcow2Reader {
     /// Open a QCOW2 disk image (v2 or v3, uncompressed, no backing file).
     pub fn open(path: &Path) -> Result<Self, Qcow2Error> {
+        Self::from_backing(Box::new(File::open(path)?))
+    }
+
+    /// Open a QCOW2 image from any seekable byte source (a `Cursor` over
+    /// inflated bytes, a positioned sub-range of a `.zip`, …) rather than a file
+    /// path — so an image stored inside an archive can be read without
+    /// extracting it to a temp file first.
+    pub fn open_reader(backing: Box<dyn ReadSeekSend>) -> Result<Self, Qcow2Error> {
+        Self::from_backing(backing)
+    }
+
+    /// Parse the header + L1 table off any seekable backing and build the reader.
+    /// Shared by [`Self::open`] (a file) and [`Self::open_reader`] (a Cursor /
+    /// zip sub-range).
+    fn from_backing(mut backing: Box<dyn ReadSeekSend>) -> Result<Self, Qcow2Error> {
         // 8 MiB max L1 table — prevents OOM on crafted images.
         const MAX_L1_ENTRIES: u32 = 1 << 20;
 
-        let mut file = File::open(path)?;
-
         // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes) headers.
         let mut hdr_buf = [0u8; 104];
-        let hdr_read = file.read(&mut hdr_buf)?;
+        let hdr_read = backing.read(&mut hdr_buf)?;
         let hdr = Qcow2Header::parse(&hdr_buf[..hdr_read])?;
 
         let cluster_size = 1u64 << hdr.cluster_bits;
@@ -94,10 +107,10 @@ impl Qcow2Reader {
         if hdr.l1_size > MAX_L1_ENTRIES {
             return Err(Qcow2Error::L1TableTooLarge(hdr.l1_size));
         }
-        file.seek(SeekFrom::Start(hdr.l1_table_offset))?;
+        backing.seek(SeekFrom::Start(hdr.l1_table_offset))?;
         let l1_bytes = u64::from(hdr.l1_size) * 8;
         let mut l1_buf = vec![0u8; l1_bytes as usize];
-        file.read_exact(&mut l1_buf)?;
+        backing.read_exact(&mut l1_buf)?;
         let l1_table: Vec<u64> = l1_buf
             .chunks_exact(8)
             .map(|c| {
@@ -108,7 +121,7 @@ impl Qcow2Reader {
             .collect();
 
         Ok(Qcow2Reader {
-            file,
+            backing,
             virtual_disk_size: hdr.disk_size,
             cluster_size,
             l1_table,
@@ -116,19 +129,6 @@ impl Qcow2Reader {
             l2_mask,
             pos: 0,
         })
-    }
-
-    /// Open a QCOW2 image from any seekable byte source (a `Cursor` over
-    /// inflated bytes, a positioned sub-range of a `.zip`, …) rather than a file
-    /// path — so an image stored inside an archive can be read without
-    /// extracting it to a temp file first.
-    pub fn open_reader(backing: Box<dyn ReadSeekSend>) -> Result<Self, Qcow2Error> {
-        // RED stub — GREEN replaces this with the shared header/L1 parse.
-        let _ = backing;
-        Err(Qcow2Error::Io(io::Error::new(
-            io::ErrorKind::Other,
-            "open_reader not implemented",
-        )))
     }
 
     /// Virtual disk size in bytes as recorded in the QCOW2 header.
@@ -150,9 +150,9 @@ impl Qcow2Reader {
         }
 
         let l2_entry_pos = l2_table_offset + l2_idx * 8;
-        self.file.seek(SeekFrom::Start(l2_entry_pos))?;
+        self.backing.seek(SeekFrom::Start(l2_entry_pos))?;
         let mut l2_bytes = [0u8; 8];
-        self.file.read_exact(&mut l2_bytes)?;
+        self.backing.read_exact(&mut l2_bytes)?;
         let l2_entry = u64::from_be_bytes(l2_bytes);
 
         if l2_entry & (1 << 62) != 0 {
@@ -202,11 +202,11 @@ impl Qcow2Reader {
     ) -> io::Result<Vec<u8>> {
         use flate2::read::DeflateDecoder;
 
-        self.file.seek(SeekFrom::Start(file_offset))?;
+        self.backing.seek(SeekFrom::Start(file_offset))?;
         let mut raw = vec![0u8; compressed_bytes];
         let mut filled = 0;
         while filled < compressed_bytes {
-            match self.file.read(&mut raw[filled..])? {
+            match self.backing.read(&mut raw[filled..])? {
                 0 => break, // EOF — normal for the last compressed cluster
                 n => filled += n,
             }
@@ -249,8 +249,8 @@ impl Read for Qcow2Reader {
         let n = match self.cluster_ref_for(self.pos)? {
             ClusterRef::Normal(cluster_offset) => {
                 let file_off = cluster_offset + offset_in_cluster as u64;
-                self.file.seek(SeekFrom::Start(file_off))?;
-                self.file.read(&mut buf[..to_read])?
+                self.backing.seek(SeekFrom::Start(file_off))?;
+                self.backing.read(&mut buf[..to_read])?
             }
             ClusterRef::Compressed {
                 file_offset,
