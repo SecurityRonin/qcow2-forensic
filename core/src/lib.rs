@@ -23,6 +23,14 @@ pub use snapshots::{snapshots, Qcow2Snapshot};
 
 use header::Qcow2Header;
 
+/// A seekable, thread-safe byte source the reader can sit on: a `File`, an
+/// in-RAM `Cursor`, or a positioned sub-range of a `.zip`. Lets a caller open a
+/// QCOW2 image straight out of an archive (no temp-file extraction) via
+/// [`Qcow2Reader::open_reader`], while [`Qcow2Reader::open`] keeps the
+/// file-path convenience.
+pub trait ReadSeekSend: Read + Seek + Send + Sync {}
+impl<T: Read + Seek + Send + Sync> ReadSeekSend for T {}
+
 /// Inspect a QCOW2 image's header for forensic facts (version, backing file,
 /// encryption, snapshots, incompatible-feature bits) **without** decoding it —
 /// works on images the reader rejects (encrypted, backing-file, etc.).
@@ -108,6 +116,19 @@ impl Qcow2Reader {
             l2_mask,
             pos: 0,
         })
+    }
+
+    /// Open a QCOW2 image from any seekable byte source (a `Cursor` over
+    /// inflated bytes, a positioned sub-range of a `.zip`, …) rather than a file
+    /// path — so an image stored inside an archive can be read without
+    /// extracting it to a temp file first.
+    pub fn open_reader(backing: Box<dyn ReadSeekSend>) -> Result<Self, Qcow2Error> {
+        // RED stub — GREEN replaces this with the shared header/L1 parse.
+        let _ = backing;
+        Err(Qcow2Error::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "open_reader not implemented",
+        )))
     }
 
     /// Virtual disk size in bytes as recorded in the QCOW2 header.
@@ -288,6 +309,33 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(data).unwrap();
         f
+    }
+
+    #[test]
+    fn open_reader_over_cursor_matches_open_path() {
+        use std::io::{Cursor, Read};
+        // A real QCOW2 image with known sector content.
+        let sector: Vec<u8> = (0u8..=255).cycle().take(512).collect();
+        let image = test_qcow2(&sector);
+
+        // Oracle: open(path) and read the whole virtual disk.
+        let tmp = write_tmp(&image);
+        let mut via_path = Qcow2Reader::open(tmp.path()).expect("open path");
+        let mut want = Vec::new();
+        via_path.read_to_end(&mut want).expect("read path");
+
+        // Under test: open_reader over an in-RAM Cursor of the SAME bytes — the
+        // zip-direct backing path.
+        let mut via_reader =
+            Qcow2Reader::open_reader(Box::new(Cursor::new(image.clone()))).expect("open_reader");
+        let mut got = Vec::new();
+        via_reader.read_to_end(&mut got).expect("read reader");
+
+        assert_eq!(
+            got, want,
+            "open_reader must read byte-identically to open(path)"
+        );
+        assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
