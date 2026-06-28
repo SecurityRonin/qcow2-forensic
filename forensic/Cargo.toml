@@ -1,6 +1,6 @@
 [package]
 name = "qcow2-forensic"
-version = "0.2.0"
+version = "0.3.0"
 edition = { workspace = true }
 rust-version = { workspace = true }
 description = "Forensic anomaly auditor for QCOW2 images — backing files, encryption, internal snapshots, dirty/corrupt feature bits as graded report::Finding, built on qcow2-core"
