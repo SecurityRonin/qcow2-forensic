@@ -23,10 +23,14 @@ name = "qcow2"
 
 [features]
 test-helpers = []
+# Implement the forensic-vfs ImageSource contract so a decoded QCOW2 composes
+# directly into the fleet VFS. Off by default (optional forensic-vfs dep).
+vfs = ["dep:forensic-vfs"]
 
 [dependencies]
 thiserror = { workspace = true }
 flate2    = { workspace = true }
+forensic-vfs = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }
