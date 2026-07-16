@@ -7,14 +7,28 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
+/// Resolve `qemu-img` across platforms — macOS Homebrew (arm64 + Intel) and the
+/// Linux apt path (`/usr/bin`, where CI installs it). The old hardcoded Homebrew
+/// path made the oracle tests skip on the Linux CI runner, dropping coverage.
+fn qemu_img_path() -> Option<&'static str> {
+    [
+        "/opt/homebrew/bin/qemu-img",
+        "/usr/local/bin/qemu-img",
+        "/usr/bin/qemu-img",
+    ]
+    .into_iter()
+    .find(|c| Path::new(c).exists())
+}
 
 fn have_qemu() -> bool {
-    Path::new(QEMU_IMG).exists()
+    qemu_img_path().is_some()
 }
 
 fn qemu(args: &[&str]) -> bool {
-    Command::new(QEMU_IMG)
+    let Some(bin) = qemu_img_path() else {
+        return false;
+    };
+    Command::new(bin)
         .args(args)
         .status()
         .is_ok_and(|s| s.success())
