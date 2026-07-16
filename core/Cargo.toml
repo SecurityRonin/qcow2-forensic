@@ -1,6 +1,6 @@
 [package]
 name          = "qcow2-core"
-version       = "0.3.1"
+version       = "0.3.2"
 edition       = { workspace = true }
 rust-version  = { workspace = true }
 description   = "Pure-Rust read-only QCOW2 (QEMU Copy-On-Write v2/v3) disk image reader"
@@ -30,7 +30,7 @@ vfs = ["dep:forensic-vfs"]
 [dependencies]
 thiserror = { workspace = true }
 flate2    = { workspace = true }
-forensic-vfs = { version = "0.1", optional = true }
+forensic-vfs = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile  = { workspace = true }

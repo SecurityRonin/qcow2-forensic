@@ -7,7 +7,7 @@
 
 **Pure-Rust QCOW2 forensics: read any QEMU/KVM/libvirt disk image, and flag what an examiner needs to know about it — in two lines.**
 
-QCOW2 images hide things a raw `dd` never would: a backing file the evidence silently depends on, internal snapshots of earlier guest states, an encryption header, or QEMU's own *dirty* / *corrupt* flags. This workspace gives you a panic-free reader **and** an auditor that surfaces those facts as graded findings.
+QCOW2 images hide things a raw `dd` never would: a backing file the evidence silently depends on, internal snapshots of earlier guest states, an encryption header, or QEMU's own *dirty* / *corrupt* flags. This workspace gives you a fuzzed, panic-free-by-construction reader **and** an auditor that surfaces those facts as graded findings.
 
 ```rust
 // What is this image, and what should I worry about? — no decoding, no key needed.
