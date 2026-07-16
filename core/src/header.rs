@@ -97,10 +97,10 @@ impl Qcow2Header {
     }
 }
 
-/// Forensically-relevant QCOW2 header facts, parsed **leniently** — unlike
-/// [`Qcow2Header::parse`], this does not reject backing files, encryption, or
-/// unsupported incompatible features, so an analyzer can inspect images the
-/// reader cannot decode.
+/// Forensically-relevant QCOW2 header facts, parsed **leniently** — unlike the
+/// strict reader's `Qcow2Header::parse`, this does not reject backing files,
+/// encryption, or unsupported incompatible features, so an analyzer can inspect
+/// images the reader cannot decode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Qcow2Info {
     /// QCOW2 format version (2 or 3).
@@ -413,6 +413,91 @@ mod tests {
             Qcow2Info::parse(&d),
             Err(Qcow2Error::UnsupportedVersion(7))
         ));
+    }
+
+    // ── Strict reader (`Qcow2Header::parse`) rejection arms ───────────────────
+
+    /// A minimal 72-byte v2 header the strict reader accepts, ready to mutate.
+    fn strict_header() -> Vec<u8> {
+        let mut h = vec![0u8; 104];
+        h[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        h[4..8].copy_from_slice(&2u32.to_be_bytes()); // version 2
+        h[20..24].copy_from_slice(&16u32.to_be_bytes()); // cluster_bits
+        h
+    }
+
+    #[test]
+    fn strict_reader_rejects_unsupported_version() {
+        let mut h = strict_header();
+        h[4..8].copy_from_slice(&7u32.to_be_bytes());
+        assert!(matches!(
+            Qcow2Header::parse(&h),
+            Err(Qcow2Error::UnsupportedVersion(7))
+        ));
+    }
+
+    #[test]
+    fn strict_reader_rejects_encryption() {
+        let mut h = strict_header();
+        h[32..36].copy_from_slice(&1u32.to_be_bytes()); // encryption = AES
+        assert!(matches!(
+            Qcow2Header::parse(&h),
+            Err(Qcow2Error::EncryptedNotSupported)
+        ));
+    }
+
+    #[test]
+    fn strict_reader_rejects_unsupported_incompatible_features() {
+        let mut h = strict_header();
+        h[4..8].copy_from_slice(&3u32.to_be_bytes()); // version 3
+        h[72..80].copy_from_slice(&(1u64 << 4).to_be_bytes()); // extended-L2 bit
+        assert!(matches!(
+            Qcow2Header::parse(&h),
+            Err(Qcow2Error::UnsupportedIncompatibleFeatures(_))
+        ));
+    }
+
+    #[test]
+    fn info_parse_rejects_bad_magic() {
+        let mut h = vec![0u8; 72];
+        h[0..4].copy_from_slice(&0xDEAD_BEEF_u32.to_be_bytes());
+        assert!(matches!(Qcow2Info::parse(&h), Err(Qcow2Error::BadMagic)));
+    }
+
+    #[test]
+    fn format_extension_walk_exhausts_without_end_marker() {
+        // A chain of non-END, non-backing-format extensions that runs to the
+        // very end of the window drives the loop's advance + window-exhaustion
+        // arms (the `data_end > data.len()` / `pos >= data.len()` return).
+        let mut exts = Vec::new();
+        exts.extend_from_slice(&ext(0x1111_1111, b"payloadA"));
+        exts.extend_from_slice(&ext(0x2222_2222, b"payloadB"));
+        // No END marker; the extension area fills the trailing window exactly.
+        let mut d = vec![0u8; 112];
+        d[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        d[4..8].copy_from_slice(&3u32.to_be_bytes());
+        d[100..104].copy_from_slice(&112u32.to_be_bytes());
+        d.extend_from_slice(&exts);
+        let info = Qcow2Info::parse(&d).unwrap();
+        assert!(info.backing_format.is_none());
+    }
+
+    #[test]
+    fn extension_walk_stops_after_the_iteration_cap() {
+        // More than 64 tiny non-terminating extensions: the walk hits its
+        // 64-iteration safety cap and returns None (the post-loop fall-through)
+        // rather than spinning. Uses 4-byte payloads so 65 records fit the window.
+        let mut exts = Vec::new();
+        for _ in 0..70 {
+            exts.extend_from_slice(&ext(0x0A0A_0A0A, b"pad!"));
+        }
+        let mut d = vec![0u8; 112];
+        d[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        d[4..8].copy_from_slice(&3u32.to_be_bytes());
+        d[100..104].copy_from_slice(&112u32.to_be_bytes());
+        d.extend_from_slice(&exts);
+        let info = Qcow2Info::parse(&d).unwrap();
+        assert!(info.backing_format.is_none());
     }
 
     #[test]

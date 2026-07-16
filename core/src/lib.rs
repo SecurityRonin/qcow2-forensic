@@ -501,114 +501,179 @@ mod tests {
         );
     }
 
-    // ── Differential test: bytes must match qemu-img convert -O raw output ────
+    // The Tier-1 differential validation against `qemu-img convert` output and
+    // the real CirrOS corpus lives in `core/tests/real_images.rs` and
+    // `core/tests/corpus.rs` — env-gated oracle tests that skip cleanly when the
+    // tool / large image is absent. Those tests are the correctness path; per the
+    // deterministic-coverage-fixtures discipline they must NOT drive the coverage
+    // gate. The synthetic byte-buffer tests below cover the same production paths
+    // (compressed clusters, unallocated/zero clusters, seek variants, L1-size
+    // guard) from committed bytes alone, so the coverage number holds on a fresh
+    // clone with no external tool.
 
-    #[test]
-    fn reads_match_qemu_raw_convert() {
-        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
-        if !Path::new(QEMU_IMG).exists() {
-            return;
-        }
-        let tmp = tempfile::tempdir().expect("tempdir");
+    // ── Synthetic coverage fixtures (committed bytes, no external tool) ────────
 
-        // 1 MiB source with a deterministic non-trivial pattern covering
-        // sector boundaries and cluster boundaries (default cluster = 65536 B).
-        let size: usize = 1 << 20;
-        let raw_data: Vec<u8> = (0..size).map(|i| (i ^ (i >> 8)) as u8).collect();
-        let raw_path = tmp.path().join("source.raw");
-        std::fs::write(&raw_path, &raw_data).expect("write raw");
-
-        let qcow2_path = tmp.path().join("test.qcow2");
-        let status = std::process::Command::new(QEMU_IMG)
-            .args([
-                "convert",
-                "-O",
-                "qcow2",
-                raw_path.to_str().unwrap(),
-                qcow2_path.to_str().unwrap(),
-            ])
-            .status()
-            .expect("spawn qemu-img");
-        assert!(status.success(), "qemu-img convert failed");
-
-        let mut reader = Qcow2Reader::open(&qcow2_path).expect("open");
-        assert_eq!(reader.virtual_disk_size(), size as u64);
-
-        // Sample: start, mid-sector, cluster boundary, cluster+sector, near-end.
-        let cluster = 65536usize;
-        for &offset in &[0usize, 511, cluster, cluster + 512, size - 512] {
-            let len = 512.min(size - offset);
-            let mut buf = vec![0u8; len];
-            reader.seek(SeekFrom::Start(offset as u64)).expect("seek");
-            reader.read_exact(&mut buf).expect("read");
-            assert_eq!(
-                buf,
-                raw_data[offset..offset + len],
-                "byte mismatch at offset {offset:#x}",
-            );
-        }
+    /// Deflate-compress `plain` with a raw (headerless) deflate stream, matching
+    /// what a QCOW2 compressed cluster stores.
+    fn raw_deflate(plain: &[u8]) -> Vec<u8> {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(plain).unwrap();
+        enc.finish().unwrap()
     }
 
-    // ── Corpus differential test: real CirrOS image vs qemu-img convert ───────
+    /// Build a minimal QCOW2 (512-byte clusters) whose single data cluster is a
+    /// compressed (raw-deflate) stream, so reads exercise the decompression path.
+    ///
+    /// Layout: 0=header, 1=L1, 2=refcount(unused), 3=L2, 4=compressed data.
+    fn compressed_qcow2(plain: &[u8]) -> Vec<u8> {
+        use testutil::{CLUSTER_BITS, CLUSTER_SIZE};
+        let cs = CLUSTER_SIZE as u64;
+        let l1_off = cs;
+        let l2_off = cs * 3;
+        let data_off = cs * 4;
+
+        let compressed = raw_deflate(plain);
+        let nb_sectors = compressed.len().div_ceil(512).max(1) as u64;
+
+        let mut img = vec![0u8; data_off as usize];
+        // Header.
+        img[0..4].copy_from_slice(&crate::header::MAGIC.to_be_bytes());
+        img[4..8].copy_from_slice(&2u32.to_be_bytes());
+        img[20..24].copy_from_slice(&CLUSTER_BITS.to_be_bytes());
+        img[24..32].copy_from_slice(&cs.to_be_bytes()); // disk_size = one cluster
+        img[36..40].copy_from_slice(&1u32.to_be_bytes()); // l1_size = 1
+        img[40..48].copy_from_slice(&l1_off.to_be_bytes());
+        // L1[0] → L2 table.
+        img[l1_off as usize..l1_off as usize + 8].copy_from_slice(&l2_off.to_be_bytes());
+        // L2[0] → compressed descriptor: bit 62 set; low (63 - cluster_bits) bits
+        // hold the file byte offset; next (cluster_bits - 1) bits hold
+        // (nb_sectors - 1).
+        let split = 63u32 - CLUSTER_BITS;
+        let desc = (1u64 << 62) | ((nb_sectors - 1) << split) | data_off;
+        img[l2_off as usize..l2_off as usize + 8].copy_from_slice(&desc.to_be_bytes());
+        // Append the compressed stream.
+        img.extend_from_slice(&compressed);
+        img
+    }
 
     #[test]
-    fn corpus_cirros_reads_match_qemu_raw_convert() {
-        const QEMU_IMG: &str = "/opt/homebrew/bin/qemu-img";
-        if !Path::new(QEMU_IMG).exists() {
-            return;
+    fn compressed_cluster_decompresses_to_original_bytes() {
+        // A pattern that both compresses well and shrinks below one cluster, so
+        // the decompressor's short-output resize-to-cluster path also runs.
+        let mut plain = vec![0u8; testutil::CLUSTER_SIZE];
+        for (i, b) in plain.iter_mut().enumerate() {
+            *b = ((i / 8) % 251) as u8;
         }
-        let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tests/data/cirros-0.6.3-x86_64-disk.img");
-        if !corpus.exists() {
-            return; // skip if corpus not present
-        }
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let raw_path = tmp.path().join("cirros.raw");
-        let ok = std::process::Command::new(QEMU_IMG)
-            .args([
-                "convert",
-                "-O",
-                "raw",
-                corpus.to_str().unwrap(),
-                raw_path.to_str().unwrap(),
-            ])
-            .status()
-            .expect("spawn qemu-img")
-            .success();
-        assert!(ok, "qemu-img convert failed");
-        let ref_data = std::fs::read(&raw_path).expect("read raw");
+        let img = compressed_qcow2(&plain);
+        let mut reader =
+            Qcow2Reader::open_reader(Box::new(std::io::Cursor::new(img))).expect("open");
+        let mut got = vec![0u8; testutil::CLUSTER_SIZE];
+        reader
+            .read_exact(&mut got)
+            .expect("read compressed cluster");
+        assert_eq!(got, plain, "compressed cluster must decode to the original");
+    }
 
-        let mut reader = Qcow2Reader::open(&corpus).expect("open corpus");
+    #[test]
+    fn short_compressed_stream_resizes_to_full_cluster() {
+        // A deflate stream whose decompressed length is SHORTER than one cluster
+        // drives the `out.len() < cluster_size` resize-with-zeros branch: the
+        // read must still return a full, zero-padded cluster.
+        let half = testutil::CLUSTER_SIZE / 2;
+        let plain: Vec<u8> = (0..half).map(|i| (i % 253) as u8).collect();
+        let img = compressed_qcow2(&plain);
+        let mut reader =
+            Qcow2Reader::open_reader(Box::new(std::io::Cursor::new(img))).expect("open");
+        let mut got = vec![0xFFu8; testutil::CLUSTER_SIZE];
+        reader.read_exact(&mut got).expect("read");
+        let mut want = vec![0u8; testutil::CLUSTER_SIZE];
+        want[..half].copy_from_slice(&plain);
         assert_eq!(
-            reader.virtual_disk_size(),
-            ref_data.len() as u64,
-            "virtual_disk_size must match reference raw length"
+            got, want,
+            "short deflate output is zero-padded to a cluster"
         );
+    }
 
-        // CirrOS is 112 MiB virtual. Sample across the full range:
-        // MBR, partition table, multiple cluster boundaries, mid-image, near-end.
-        let vsize = ref_data.len();
-        let cluster = 65536usize;
-        let samples = [
-            0usize,              // MBR / boot sector
-            446,                 // partition table entries
-            510,                 // MBR boot signature (0x55 0xAA)
-            cluster,             // second cluster
-            cluster * 10,        // tenth cluster
-            vsize / 2,           // mid-image
-            vsize / 2 + cluster, // mid-image + one cluster
-            vsize - 512,         // last sector
-        ];
-        for &offset in &samples {
-            let len = 512.min(vsize - offset);
-            let mut buf = vec![0u8; len];
-            reader.seek(SeekFrom::Start(offset as u64)).expect("seek");
-            reader.read_exact(&mut buf).expect("read");
-            assert_eq!(
-                buf,
-                ref_data[offset..offset + len],
-                "byte mismatch at offset {offset:#x}",
-            );
+    #[test]
+    fn corrupt_compressed_stream_errors_not_panics() {
+        // A compressed descriptor pointing at non-deflate bytes must surface an
+        // InvalidData error, never panic.
+        let mut img = compressed_qcow2(&[0xAB; 64]);
+        // Clobber the compressed stream (everything past the data cluster start).
+        let data_off = testutil::CLUSTER_SIZE * 4;
+        for b in &mut img[data_off..] {
+            *b = 0xFF;
         }
+        let mut reader =
+            Qcow2Reader::open_reader(Box::new(std::io::Cursor::new(img))).expect("open");
+        let mut buf = vec![0u8; testutil::CLUSTER_SIZE];
+        assert!(
+            reader.read_exact(&mut buf).is_err(),
+            "corrupt deflate stream must error, not panic"
+        );
+    }
+
+    #[test]
+    fn unallocated_cluster_reads_as_zeros() {
+        // L2[0] = 0 (unallocated) — a read must yield zeros, exercising the
+        // Unallocated arm reached via an all-zero L2 entry with a set L1.
+        let img = test_qcow2(&[0xAB; 512]);
+        let mut patched = img.clone();
+        // Zero L2[0] at offset 1536 (L2_OFFSET) so cluster_offset resolves to 0.
+        patched[1536..1544].copy_from_slice(&0u64.to_be_bytes());
+        let mut reader = Qcow2Reader::open(write_tmp(&patched).path()).expect("open");
+        let mut buf = [0xFFu8; 512];
+        reader.read_exact(&mut buf).expect("read");
+        assert_eq!(buf, [0u8; 512], "unallocated cluster reads as zeros");
+    }
+
+    #[test]
+    fn unset_l1_entry_reads_as_zeros() {
+        // L1[0] = 0 — the whole L2 table is absent, so cluster_ref_for returns
+        // Unallocated at the L1 stage (the `l2_table_offset == 0` arm).
+        let img = test_qcow2(&[0xAB; 512]);
+        let mut patched = img.clone();
+        // Zero L1[0] at offset 512 (L1_OFFSET).
+        patched[512..520].copy_from_slice(&0u64.to_be_bytes());
+        let mut reader = Qcow2Reader::open(write_tmp(&patched).path()).expect("open");
+        let mut buf = [0xFFu8; 512];
+        reader.read_exact(&mut buf).expect("read");
+        assert_eq!(buf, [0u8; 512], "unset L1 entry reads as zeros");
+    }
+
+    #[test]
+    fn seek_from_current_and_end_and_reject_negative() {
+        let img = test_qcow2(&[0u8; 512]);
+        let mut reader = Qcow2Reader::open(write_tmp(&img).path()).expect("open");
+        // SeekFrom::Current advances relative to the current position.
+        assert_eq!(reader.seek(SeekFrom::Current(10)).unwrap(), 10);
+        assert_eq!(reader.seek(SeekFrom::Current(5)).unwrap(), 15);
+        // SeekFrom::End is relative to the virtual disk size.
+        assert_eq!(
+            reader.seek(SeekFrom::End(-4)).unwrap(),
+            testutil::CLUSTER_SIZE as u64 - 4
+        );
+        assert_eq!(
+            reader.seek(SeekFrom::End(0)).unwrap(),
+            testutil::CLUSTER_SIZE as u64
+        );
+        // A seek before the start is rejected (InvalidInput), never a panic.
+        assert!(reader.seek(SeekFrom::Current(-1000)).is_err());
+        assert!(reader.seek(SeekFrom::Start(0)).is_ok());
+        assert!(reader.seek(SeekFrom::End(-100_000)).is_err());
+    }
+
+    #[test]
+    fn l1_size_over_cap_is_rejected() {
+        // l1_size above MAX_L1_ENTRIES (1 << 20) must error, not allocate.
+        let mut h = qcow2_header_bytes(9);
+        h[36..40].copy_from_slice(&((1u32 << 20) + 1).to_be_bytes()); // l1_size
+        assert!(matches!(
+            Qcow2Reader::open(write_tmp(&h).path()),
+            Err(Qcow2Error::L1TableTooLarge(_))
+        ));
     }
 }

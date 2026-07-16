@@ -345,6 +345,62 @@ mod tests {
     }
 
     #[test]
+    fn name_read_failure_after_id_stops_gracefully() {
+        // id_str_size fits but name_size runs past EOF: the id reads, the name
+        // read fails, and enumeration stops with no fully-parsed entry.
+        let snap_off = 512u64;
+        let mut img = header(1, snap_off);
+        img.resize(snap_off as usize, 0);
+        let mut e = vec![0u8; SNAPSHOT_HEADER_FIXED];
+        e[12..14].copy_from_slice(&1u16.to_be_bytes()); // id_str_size = 1
+        e[14..16].copy_from_slice(&64u16.to_be_bytes()); // name_size = 64 (past EOF)
+        img.extend(e);
+        img.extend_from_slice(b"1"); // the 1-byte id, then EOF
+        let f = write_tmp(&img);
+        assert!(
+            snapshots(f.path()).unwrap().is_empty(),
+            "name read past EOF must stop without a partial entry"
+        );
+    }
+
+    #[test]
+    fn empty_id_and_name_strings_parse() {
+        // id_str_size = name_size = 0 drives read_string's `len == 0` empty-string
+        // return for both fields.
+        let snap_off = 512u64;
+        let mut img = header(1, snap_off);
+        img.resize(snap_off as usize, 0);
+        img.extend(entry(1_700_000_000, 0, 0, &[], b"", b""));
+        let f = write_tmp(&img);
+        let snaps = snapshots(f.path()).unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert!(snaps[0].id.is_empty());
+        assert!(snaps[0].name.is_empty());
+    }
+
+    #[test]
+    fn final_entry_padding_at_eof_is_harmless() {
+        // A fully-parsed entry whose 8-byte padding would run past EOF: the entry
+        // is already captured, so the padding-skip failure is swallowed (the
+        // `pad > 0 && skip(..).is_err()` harmless arm) and the snapshot returns.
+        let snap_off = 512u64;
+        let mut img = header(1, snap_off);
+        img.resize(snap_off as usize, 0);
+        // consumed = 40 (fixed) + id(1) + name(2) = 43 ⇒ pad = 5, none present.
+        let mut e = vec![0u8; SNAPSHOT_HEADER_FIXED];
+        e[12..14].copy_from_slice(&1u16.to_be_bytes()); // id_str_size = 1
+        e[14..16].copy_from_slice(&2u16.to_be_bytes()); // name_size = 2
+        img.extend(e);
+        img.extend_from_slice(b"1"); // id
+        img.extend_from_slice(b"ok"); // name, then EOF (no padding bytes)
+        let f = write_tmp(&img);
+        let snaps = snapshots(f.path()).unwrap();
+        assert_eq!(snaps.len(), 1, "entry captured despite padding at EOF");
+        assert_eq!(snaps[0].id, "1");
+        assert_eq!(snaps[0].name, "ok");
+    }
+
+    #[test]
     fn extra_data_runs_off_end_stops_gracefully() {
         let snap_off = 512u64;
         let mut img = header(1, snap_off);

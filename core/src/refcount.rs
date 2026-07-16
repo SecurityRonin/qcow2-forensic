@@ -336,6 +336,123 @@ mod tests {
         img
     }
 
+    /// Build a v3 QCOW2 whose data cluster (index 5) carries `refcount_value`
+    /// stored at `refcount_order` (bits = 1 << order). Supports the byte-aligned
+    /// widths 8/16/32/64 (orders 3..=6) and the sub-byte widths 1/2/4 (orders
+    /// 0..=2), packing MSB-first within a byte exactly as QCOW2 does. This drives
+    /// the width-specific arms of `refcount_of` from committed synthetic bytes.
+    fn build_order(refcount_order: u32, refcount_value: u64) -> Vec<u8> {
+        let l1_off = CS;
+        let rt_off = CS * 2;
+        let block_off = CS * 3;
+        let l2_off = CS * 4;
+        let data_off = CS * 5;
+
+        let mut img = vec![0u8; (CS * 6) as usize];
+
+        img[0..4].copy_from_slice(&crate::header::MAGIC.to_be_bytes());
+        img[4..8].copy_from_slice(&3u32.to_be_bytes());
+        img[20..24].copy_from_slice(&CB.to_be_bytes());
+        img[24..32].copy_from_slice(&CS.to_be_bytes());
+        img[36..40].copy_from_slice(&1u32.to_be_bytes()); // l1_size
+        img[40..48].copy_from_slice(&l1_off.to_be_bytes());
+        img[48..56].copy_from_slice(&rt_off.to_be_bytes());
+        img[56..60].copy_from_slice(&1u32.to_be_bytes()); // refcount_table_clusters
+        img[96..100].copy_from_slice(&refcount_order.to_be_bytes());
+        img[100..104].copy_from_slice(&104u32.to_be_bytes());
+
+        let l1e = l2_off | (1 << 63);
+        img[l1_off as usize..l1_off as usize + 8].copy_from_slice(&l1e.to_be_bytes());
+        img[rt_off as usize..rt_off as usize + 8].copy_from_slice(&block_off.to_be_bytes());
+
+        let refcount_bits = 1u64 << refcount_order;
+        let data_cluster_idx = data_off / CS; // = 5
+        let bit_off = data_cluster_idx * refcount_bits;
+        let byte_off = block_off + bit_off / 8;
+        let block = &mut img[byte_off as usize..];
+        match refcount_bits {
+            8 => block[0] = refcount_value as u8,
+            16 => block[0..2].copy_from_slice(&(refcount_value as u16).to_be_bytes()),
+            32 => block[0..4].copy_from_slice(&(refcount_value as u32).to_be_bytes()),
+            64 => block[0..8].copy_from_slice(&refcount_value.to_be_bytes()),
+            b @ (1 | 2 | 4) => {
+                let within = (bit_off % 8) as u32;
+                let shift = 8 - within - b as u32;
+                block[0] = ((refcount_value & ((1 << b) - 1)) << shift) as u8;
+            }
+            _ => unreachable!("test uses only defined widths"),
+        }
+
+        let l2e = data_off | (1 << 63);
+        img[l2_off as usize..l2_off as usize + 8].copy_from_slice(&l2e.to_be_bytes());
+        img
+    }
+
+    #[test]
+    fn eight_bit_refcount_zero_is_orphan() {
+        let f = write_tmp(&build_order(3, 0)); // order 3 → 8-bit
+        let r = refcount_report(f.path()).unwrap();
+        assert_eq!(r.refcount_order, 3);
+        assert_eq!(r.allocated_clusters, 1);
+        assert_eq!(r.orphan_clusters, 1);
+    }
+
+    #[test]
+    fn eight_bit_refcount_nonzero_is_referenced() {
+        let f = write_tmp(&build_order(3, 1));
+        let r = refcount_report(f.path()).unwrap();
+        assert_eq!(r.orphan_clusters, 0);
+    }
+
+    #[test]
+    fn thirty_two_bit_refcount_is_read() {
+        // Non-zero 32-bit refcount ⇒ referenced (drives the 32-bit arm).
+        let f = write_tmp(&build_order(5, 1)); // order 5 → 32-bit
+        let r = refcount_report(f.path()).unwrap();
+        assert_eq!(r.refcount_order, 5);
+        assert_eq!(r.allocated_clusters, 1);
+        assert_eq!(r.orphan_clusters, 0);
+    }
+
+    #[test]
+    fn sixty_four_bit_refcount_is_read() {
+        let f = write_tmp(&build_order(6, 1)); // order 6 → 64-bit
+        let r = refcount_report(f.path()).unwrap();
+        assert_eq!(r.refcount_order, 6);
+        assert_eq!(r.allocated_clusters, 1);
+        assert_eq!(r.orphan_clusters, 0);
+    }
+
+    #[test]
+    fn sub_byte_refcount_widths_are_extracted() {
+        // Orders 0/1/2 → 1/2/4-bit refcounts packed MSB-first within a byte.
+        for order in [0u32, 1, 2] {
+            let zero = write_tmp(&build_order(order, 0));
+            let rz = refcount_report(zero.path()).unwrap();
+            assert_eq!(rz.refcount_order, order, "order {order}");
+            assert_eq!(rz.allocated_clusters, 1, "order {order}");
+            assert_eq!(rz.orphan_clusters, 1, "order {order}: zero ⇒ orphan");
+
+            let one = write_tmp(&build_order(order, 1));
+            let ro = refcount_report(one.path()).unwrap();
+            assert_eq!(ro.orphan_clusters, 0, "order {order}: nonzero ⇒ referenced");
+        }
+    }
+
+    #[test]
+    fn empty_l1_entry_is_skipped() {
+        // L1[0] = 0 ⇒ the `l2_offset == 0` continue arm; no clusters counted.
+        let mut img = build(1);
+        let l1_off = CS as usize;
+        img[l1_off..l1_off + 8].copy_from_slice(&0u64.to_be_bytes());
+        let f = write_tmp(&img);
+        let r = refcount_report(f.path()).unwrap();
+        assert_eq!(
+            r.allocated_clusters, 0,
+            "an unset L1 entry allocates nothing"
+        );
+    }
+
     #[test]
     fn referenced_cluster_is_not_an_orphan() {
         let f = write_tmp(&build(1));
