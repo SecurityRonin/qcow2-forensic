@@ -345,6 +345,51 @@ mod tests {
         assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
     }
 
+    /// A backing that returns at most one byte per `read()`, wrapping any inner
+    /// seekable source. `open_reader` accepts arbitrary `Read + Seek` backings,
+    /// which are free to short-read; this locks in that the header parse does not
+    /// assume a single `read()` fills its 104-byte window.
+    struct OneByteAtATime<R>(R);
+
+    impl<R: Read> Read for OneByteAtATime<R> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            self.0.read(&mut buf[..1])
+        }
+    }
+
+    impl<R: Seek> Seek for OneByteAtATime<R> {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.0.seek(pos)
+        }
+    }
+
+    #[test]
+    fn chunking_backing_still_opens() {
+        use std::io::{Cursor, Read};
+        let sector: Vec<u8> = (0u8..=255).cycle().take(512).collect();
+        let image = test_qcow2(&sector);
+
+        // Oracle: open(path) and read the whole virtual disk.
+        let tmp = write_tmp(&image);
+        let mut via_path = Qcow2Reader::open(tmp.path()).expect("open path");
+        let mut want = Vec::new();
+        via_path.read_to_end(&mut want).expect("read path");
+
+        // Under test: a backing that hands back one byte at a time. A valid image
+        // must still open and read byte-identically — with a single-`read()`
+        // header assumption it is silently mis-rejected instead.
+        let backing = OneByteAtATime(Cursor::new(image.clone()));
+        let mut via_reader = Qcow2Reader::open_reader(Box::new(backing)).expect("open_reader");
+        let mut got = Vec::new();
+        via_reader.read_to_end(&mut got).expect("read reader");
+
+        assert_eq!(got, want, "chunking backing must read byte-identically");
+        assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Build a minimal valid QCOW2 v2 header (72 bytes) with arbitrary `cluster_bits`.
