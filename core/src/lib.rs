@@ -45,12 +45,15 @@ pub fn inspect(path: &Path) -> Result<Qcow2Info, Qcow2Error> {
     Qcow2Info::parse(&hdr_buf[..n])
 }
 
-/// Fill `buf` from the start of `file`, returning the number of bytes read.
-/// Handles short reads (small files) by looping until EOF or `buf` is full.
-fn read_window(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+/// Fill `buf` from the reader's current position, returning the number of bytes
+/// read. Handles short reads (small files, chunking backings) by looping until
+/// EOF or `buf` is full — so the caller never assumes a single `read()` fills
+/// the window. Works over any [`ReadSeekSend`]: a `File` (via `inspect`) or an
+/// arbitrary backing behind a `Box<dyn ReadSeekSend>` (via `from_backing`).
+fn read_window(reader: &mut dyn ReadSeekSend, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
-        match file.read(&mut buf[filled..])? {
+        match reader.read(&mut buf[filled..])? {
             0 => break,
             n => filled += n,
         }
@@ -85,6 +88,14 @@ impl Qcow2Reader {
         Self::from_backing(backing)
     }
 
+    /// Open a QCOW2 image from any owned `Read + Seek + Send + Sync` value —
+    /// e.g. `Qcow2Reader::from_reader(Cursor::new(bytes))` — without the
+    /// `Box::new(...)` boilerplate of [`Self::open_reader`]. The reader is boxed
+    /// internally onto the shared backing.
+    pub fn from_reader<T: ReadSeekSend + 'static>(reader: T) -> Result<Self, Qcow2Error> {
+        Self::from_backing(Box::new(reader))
+    }
+
     /// Parse the header + L1 table off any seekable backing and build the reader.
     /// Shared by [`Self::open`] (a file) and [`Self::open_reader`] (a Cursor /
     /// zip sub-range).
@@ -92,9 +103,13 @@ impl Qcow2Reader {
         // 8 MiB max L1 table — prevents OOM on crafted images.
         const MAX_L1_ENTRIES: u32 = 1 << 20;
 
-        // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes) headers.
+        // Read enough bytes to cover both v2 (72 bytes) and v3 (104 bytes)
+        // headers. A single read() is NOT assumed to fill the window — an
+        // arbitrary backing (a chunking or streaming Read+Seek) may short-read,
+        // so loop until the window is full or EOF; a genuinely short file simply
+        // yields fewer bytes (parse is bounds-checked).
         let mut hdr_buf = [0u8; 104];
-        let hdr_read = backing.read(&mut hdr_buf)?;
+        let hdr_read = read_window(&mut *backing, &mut hdr_buf)?;
         let hdr = Qcow2Header::parse(&hdr_buf[..hdr_read])?;
 
         let cluster_size = 1u64 << hdr.cluster_bits;
@@ -341,6 +356,75 @@ mod tests {
         assert_eq!(
             got, want,
             "open_reader must read byte-identically to open(path)"
+        );
+        assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
+    }
+
+    /// A backing that returns at most one byte per `read()`, wrapping any inner
+    /// seekable source. `open_reader` accepts arbitrary `Read + Seek` backings,
+    /// which are free to short-read; this locks in that the header parse does not
+    /// assume a single `read()` fills its 104-byte window.
+    struct OneByteAtATime<R>(R);
+
+    impl<R: Read> Read for OneByteAtATime<R> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            self.0.read(&mut buf[..1])
+        }
+    }
+
+    impl<R: Seek> Seek for OneByteAtATime<R> {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.0.seek(pos)
+        }
+    }
+
+    #[test]
+    fn chunking_backing_still_opens() {
+        use std::io::{Cursor, Read};
+        let sector: Vec<u8> = (0u8..=255).cycle().take(512).collect();
+        let image = test_qcow2(&sector);
+
+        // Oracle: open(path) and read the whole virtual disk.
+        let tmp = write_tmp(&image);
+        let mut via_path = Qcow2Reader::open(tmp.path()).expect("open path");
+        let mut want = Vec::new();
+        via_path.read_to_end(&mut want).expect("read path");
+
+        // Under test: a backing that hands back one byte at a time. A valid image
+        // must still open and read byte-identically — with a single-`read()`
+        // header assumption it is silently mis-rejected instead.
+        let backing = OneByteAtATime(Cursor::new(image.clone()));
+        let mut via_reader = Qcow2Reader::open_reader(Box::new(backing)).expect("open_reader");
+        let mut got = Vec::new();
+        via_reader.read_to_end(&mut got).expect("read reader");
+
+        assert_eq!(got, want, "chunking backing must read byte-identically");
+        assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
+    }
+
+    #[test]
+    fn from_reader_over_cursor_matches_open_path() {
+        use std::io::{Cursor, Read};
+        let sector: Vec<u8> = (0u8..=255).cycle().take(512).collect();
+        let image = test_qcow2(&sector);
+
+        let tmp = write_tmp(&image);
+        let mut via_path = Qcow2Reader::open(tmp.path()).expect("open path");
+        let mut want = Vec::new();
+        via_path.read_to_end(&mut want).expect("read path");
+
+        // from_reader takes the owned source directly — no Box::new at the call site.
+        let mut via_reader =
+            Qcow2Reader::from_reader(Cursor::new(image.clone())).expect("from_reader");
+        let mut got = Vec::new();
+        via_reader.read_to_end(&mut got).expect("read reader");
+
+        assert_eq!(
+            got, want,
+            "from_reader must read byte-identically to open(path)"
         );
         assert_eq!(via_reader.virtual_disk_size(), via_path.virtual_disk_size());
     }
