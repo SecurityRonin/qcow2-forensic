@@ -289,9 +289,12 @@ fn inspect_detects_encryption_on_real_luks_image() {
 fn inspect_reads_real_cirros_corpus_as_clean() {
     let corpus =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/data/cirros-0.6.3-x86_64-disk.img");
-    if !corpus.exists() {
-        return;
-    }
+    // Committed to tests/data/, so absence is a broken checkout, not a skip.
+    assert!(
+        corpus.exists(),
+        "committed fixture missing: {}",
+        corpus.display()
+    );
     let info = qcow2::inspect(&corpus).unwrap();
     assert!(info.version == 2 || info.version == 3, "real qcow2 version");
     assert!(
