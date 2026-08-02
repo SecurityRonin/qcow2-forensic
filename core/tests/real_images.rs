@@ -7,25 +7,49 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Resolve `qemu-img` across platforms — macOS Homebrew (arm64 + Intel) and the
-/// Linux apt path (`/usr/bin`, where CI installs it). The old hardcoded Homebrew
-/// path made the oracle tests skip on the Linux CI runner, dropping coverage.
-fn qemu_img_path() -> Option<&'static str> {
+/// Resolve a usable `qemu-img`, or `None` (the differential then skips).
+///
+/// `PATH` is probed first, so any install location works — including ones a
+/// fixed list cannot anticipate: another package manager's prefix, or a
+/// hand-built install. The absolute
+/// candidates are the fallback for a stripped `PATH`: Homebrew on Apple silicon
+/// and Intel, then `/usr/bin`, where the Linux CI runner's `qemu-utils` package
+/// lands it. `QEMU_IMG_BIN` overrides both.
+///
+/// A hardcoded Homebrew path resolved only on a macOS-arm64 dev machine, making
+/// the oracle tests skip on the Linux CI runner and drop coverage.
+fn qemu_img_bin() -> Option<String> {
+    if let Ok(explicit) = std::env::var("QEMU_IMG_BIN") {
+        return usable(&explicit);
+    }
     [
+        "qemu-img",
         "/opt/homebrew/bin/qemu-img",
         "/usr/local/bin/qemu-img",
         "/usr/bin/qemu-img",
     ]
     .into_iter()
-    .find(|c| Path::new(c).exists())
+    .find_map(usable)
+}
+
+/// A candidate counts only if it actually executes: a successful `--version`
+/// proves both that the name resolved and that the binary runs on this host,
+/// which a bare `Path::exists()` check does not.
+fn usable(candidate: &str) -> Option<String> {
+    Command::new(candidate)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|_| candidate.to_string())
 }
 
 fn have_qemu() -> bool {
-    qemu_img_path().is_some()
+    qemu_img_bin().is_some()
 }
 
 fn qemu(args: &[&str]) -> bool {
-    let Some(bin) = qemu_img_path() else {
+    let Some(bin) = qemu_img_bin() else {
         return false;
     };
     Command::new(bin)
