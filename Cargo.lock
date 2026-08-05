@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "qcow2-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "flate2",
  "forensic-testgate",
@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "qcow2-forensic"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "forensicnomicon",
  "qcow2-core",
