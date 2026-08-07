@@ -9,57 +9,57 @@ on:
 permissions:
   contents: read
 
+# Only the repo-specific jobs at the bottom of this file read these. A called
+# workflow does not inherit caller-level `env:`; the reusable workflow declares
+# its own copy of exactly the same three.
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: -Dwarnings
 
 jobs:
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check
+  ci:
+    uses: SecurityRonin/fleet-ci/.github/workflows/rust-ci.yml@619094ad54edc586f5c2733358e00326b30790bd
+    with:
+      # The old `test` job ran on ubuntu-latest only. `true` would newly gate on
+      # macOS and Windows, which nothing here has ever been shown to pass.
+      os-matrix: false
+      # The old MSRV job ran `cargo test --workspace` on 1.85, not a bare build.
+      # The floor needs no input: both members inherit rust-version "1.85" from
+      # [workspace.package], so the workflow derives the same 1.85.
+      msrv-check: test
+      # The old coverage job installed qemu-utils so the COWD/seSparse
+      # cross-validation tests RUN rather than skip — its comment says the
+      # measured number depends on it. Without this the 95% floor below is being
+      # applied to a smaller suite than the one it was set from.
+      system-packages: qemu-utils
+      # Carried across exactly: the old gate was
+      #   cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 95
+      # a deliberate regression backstop (actual ~96.6%; the remainder is
+      # fault-injection arms and refcount-width branches real corpora do not
+      # reach). Not raised, not converted to the strict per-line gate.
+      coverage-gate: floor
+      coverage-floor: 95
+      # The old coverage job passed --all-features, so the floor was measured
+      # with every feature on; the default (true) is what reproduces it.
+      #
+      # The repo's own deny.toml, not the shared fleet config. Local is strictly
+      # STRICTER: `[bans] multiple-versions = "deny"` (shared: "warn") and
+      # `[advisories] ignore = []` (shared: 21 RUSTSEC ignores). Adopting the
+      # shared file would loosen this gate, which an adoption PR must not do.
+      deny-config-repo: ""
+      # cargo-deny-action defaults its `arguments` input to `--all-features`, so
+      # the old job checked the full-feature dependency graph. Carry that across.
+      deny-args: --all-features
+      # The shared fuzz job is a build check. This repo's `fuzz` job below is a
+      # strict superset — it runs the same `cargo +nightly fuzz build` and then a
+      # seeded 45s campaign per target — so the shared one would only rebuild the
+      # same targets. Nothing is lost: the gate below is the old one, verbatim.
+      fuzz-build-check: false
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      - run: cargo test --workspace
-
-  deny:
-    name: Cargo Deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
-
-  msrv:
-    name: MSRV (1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@c56a35af9328d0bc581dc86c05e58f97f7c38a0e # 1.85
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      - run: cargo test --workspace
+  # ---------------------------------------------------------------------------
+  # Repo-specific jobs, copied verbatim from the pre-adoption ci.yml.
+  # ---------------------------------------------------------------------------
 
   corpus:
     name: Corpus (real-world QCOW2 images)
@@ -95,25 +95,6 @@ jobs:
             cargo +nightly fuzz run "$t" -- -max_total_time=45 -rss_limit_mb=4096
           done
 
-  secrets:
-    name: Secret Scan (gitleaks)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-      - name: Install gitleaks
-        env:
-          # Pinned to avoid the GitHub API "latest" lookup, which is rate-limited for
-          # unauthenticated requests and intermittently returns an empty version
-          # (breaking the download URL → `gzip: unexpected end of file`).
-          GITLEAKS_VERSION: 8.30.1
-        run: |
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar xz -C /tmp gitleaks
-      - name: Run gitleaks
-        run: /tmp/gitleaks detect --source .
-
   geiger:
     name: Unsafe Audit (cargo-geiger)
     runs-on: ubuntu-latest
@@ -124,44 +105,3 @@ jobs:
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
       - run: cargo install cargo-geiger --locked
       - run: cargo geiger 2>&1 || true
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      # qemu-img makes the COWD/seSparse cross-validation tests run (rather than skip),
-      # so coverage is deterministic and matches local measurement.
-      - name: Install qemu-img
-        run: sudo apt-get update && sudo apt-get install -y qemu-utils
-      - run: cargo install cargo-llvm-cov --locked
-      # Regression backstop at 95% lines (the apfs/iso9660 fleet model; actual ~96.6%).
-      # The uncovered remainder is fault-injection error arms, environment-conditional
-      # test guards, a few defensive guards, and refcount-width branches (8/32/64/sub-byte)
-      # that real qcow2 corpora don't exercise — not worth contriving tests or
-      # coverage-exclusions for. 95 sits just under the honest measured floor.
-      - run: cargo llvm-cov --workspace --all-features --summary-only --fail-under-lines 95
-
-  vet:
-    name: Cargo Vet (supply-chain)
-    runs-on: ubuntu-latest
-    # Complements `deny` (known-bad advisories/licenses) with the supply-chain-
-    # injection layer: every dependency version must be human-source-reviewed or
-    # covered by an imported aggregate audit set (Google/Mozilla/Bytecode-Alliance/
-    # Embark). Config in supply-chain/{config,audits,imports}.toml.
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - name: Install cargo-vet
-        uses: taiki-e/install-action@59012be0884e296ca2da49b530610e72c49039ad # v2.81.6
-        with:
-          tool: cargo-vet
-      - name: Fetch dependencies
-        run: cargo fetch
-      - name: Check supply chain
-        run: cargo vet --locked
-
